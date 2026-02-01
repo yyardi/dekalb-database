@@ -14,57 +14,59 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-
 async def main():
-    # 1. Initialize database writers
+    # Give databases time to start up
+    logging.info("Waiting 5 seconds for databases to be ready...")
+    await asyncio.sleep(5)
+    
+    # Initialize database writers
+    logging.info("Initializing database writers...")
     postgres_writer = PostgresWriter(config)
     questdb_writer = QuestDBWriter(config)
-
-    # 2. Connect to databases
+    
+    # Connect to PostgreSQL only (QuestDB connects per-write)
+    logging.info("Connecting to databases...")
     await postgres_writer.connect()
-    questdb_writer.connect()
     logging.info("Connected to databases")
-
-    # 3. Create router
+    
+    # Create router
     router = EventRouter(postgres_writer, questdb_writer)
-
-    # 4. Set up ZMQ socket
+    
+    # Set up ZMQ socket
     context = zmq.Context()
     socket = context.socket(zmq.PULL)
     socket.bind(config.ZMQ_BIND_ADDRESS)
     logging.info(f"Listening on {config.ZMQ_BIND_ADDRESS}")
-
-    # 5. Main event loop
+    
+    # Main event loop
     try:
         while True:
             # Receive message (blocking)
             message_bytes = socket.recv()
             message = json.loads(message_bytes)
-
+            
             # Extract events
             events = message.get('events', [])
             logging.info(f"Received batch with {len(events)} events")
-
+            
             # Process each event
             start_time = time.time()
             for event in events:
                 await router.route_event(event)
-
+            
             # Log performance
             elapsed_ms = (time.time() - start_time) * 1000
             logging.info(f"Processed {len(events)} events in {elapsed_ms:.2f}ms")
-
+    
     except KeyboardInterrupt:
         logging.info("Shutting down...")
-
+    
     finally:
         # Cleanup
         await postgres_writer.close()
-        questdb_writer.close()
         socket.close()
         context.term()
         logging.info("Service stopped")
-
 
 if __name__ == '__main__':
     asyncio.run(main())

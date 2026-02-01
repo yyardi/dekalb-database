@@ -1,4 +1,4 @@
-pyzmq==25.1.2
-asyncpg==0.29.0
-questdb==1.1.0
-python-dotenv==1.0.0
+pyzmq>=25.1.0
+asyncpg>=0.29.0
+questdb>=4.1.0
+python-dotenv>=1.0.0

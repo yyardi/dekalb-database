@@ -17,32 +17,53 @@ class PostgresWriter:
         )
 
     async def update_order(self, event):
+        """Insert or update order (UPSERT)"""
         try:
             data = event['data']
             order_id = data['order_id']
-            status = data.get('status')
+            status = data.get('status', 'UNKNOWN')
             filled_quantity = data.get('filled_quantity', 0)
-            avg_fill_price = data.get('avg_fill_price', None)
-            commission = data.get('commission', None)
-
+            avg_fill_price = data.get('avg_fill_price')
+            commission = data.get('commission')
+            
+            # UPSERT: Insert if new, update if exists
             sql = """
-                UPDATE orders
-                SET status = $1,
-                    filled_quantity = $2,
-                    avg_fill_price = $3,
-                    commission = $4,
+                INSERT INTO orders (
+                    order_id, 
+                    server_env, 
+                    symbol, 
+                    side, 
+                    quantity, 
+                    status, 
+                    order_type,
+                    limit_price,
+                    submitted_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+                ON CONFLICT (order_id) 
+                DO UPDATE SET 
+                    status = $6,
+                    filled_quantity = $9,
+                    avg_fill_price = $10,
+                    commission = $11,
                     updated_at = now()
-                WHERE order_id = $5
             """
-
+            
             await self.pool.execute(
                 sql,
+                order_id,
+                event.get('server_env', 'paper'),
+                data.get('symbol'),
+                data.get('side'),
+                data.get('quantity'),
                 status,
+                data.get('order_type'),
+                data.get('limit_price'),
                 filled_quantity,
                 avg_fill_price,
-                commission,
-                order_id
+                commission
             )
+            
             logging.info(f"Updated order {order_id} to status {status}")
             return True
         except Exception as e:

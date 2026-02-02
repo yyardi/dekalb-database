@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16
@@ -20,6 +18,11 @@ services:
     volumes:
       - ./questdb-data:/var/lib/questdb
 
+  adminer:              
+    image: adminer      
+    ports:              
+      - "8080:8080"     
+
   ingestion-service:
     build: ./ingestion-service
     ports:
@@ -27,6 +30,3 @@ services:
     environment:
       - DB_HOST=postgres
       - QUESTDB_ILP_HOST=questdb
-    depends_on:
-      - postgres
-      - questdb

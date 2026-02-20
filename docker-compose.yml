@@ -1,4 +1,7 @@
 services:
+  # ---------------------------------------------------------------
+  # PostgreSQL - shared database for all services
+  # ---------------------------------------------------------------
   postgres:
     image: postgres:16
     environment:
@@ -8,21 +11,40 @@ services:
       - "5432:5432"
     volumes:
       - ./postgres-data:/var/lib/postgresql/data
+      - ./schemas:/docker-entrypoint-initdb.d   # auto-runs all .sql on first boot
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
+  # ---------------------------------------------------------------
+  # QuestDB - time-series database for executions & signals
+  # ---------------------------------------------------------------
   questdb:
     image: questdb/questdb
     ports:
-      - "9000:9000"
-      - "8812:8812"
-      - "9009:9009"
+      - "9000:9000"   # HTTP console (http://localhost:9000)
+      - "8812:8812"   # PostgreSQL wire protocol
+      - "9009:9009"   # ILP (InfluxDB Line Protocol) ingestion
     volumes:
       - ./questdb-data:/var/lib/questdb
 
-  adminer:              
-    image: adminer      
-    ports:              
-      - "8080:8080"     
+  # ---------------------------------------------------------------
+  # Adminer - lightweight DB GUI
+  # http://localhost:8080 → System: PostgreSQL, Server: postgres
+  # ---------------------------------------------------------------
+  adminer:
+    image: adminer
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
+  # ---------------------------------------------------------------
+  # Ingestion Service - ZMQ → PostgreSQL/QuestDB event pipeline
+  # ---------------------------------------------------------------
   ingestion-service:
     build: ./ingestion-service
     ports:
@@ -30,3 +52,40 @@ services:
     environment:
       - DB_HOST=postgres
       - QUESTDB_ILP_HOST=questdb
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------
+  # Trade Tracker API - FastAPI backend
+  # Swagger docs: http://localhost:8000/docs
+  # Health check: http://localhost:8000/health
+  #
+  # IBKR Gateway (optional - for live IBKR data):
+  #   Run the IB Client Portal Gateway on your host machine.
+  #   Then set IBKR_GATEWAY_ENABLED=true and IBKR_GATEWAY_URL below.
+  # ---------------------------------------------------------------
+  trade-tracker:
+    build: ./trade-tracker/api
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_HOST=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=trading
+      - POSTGRES_USER=postgres
+      # IBKR gateway - disabled by default, enable when gateway is running
+      - IBKR_GATEWAY_ENABLED=false
+      - IBKR_GATEWAY_URL=https://host.docker.internal:5000
+      - IBKR_ACCOUNT_ID=
+      # Tune these as needed
+      - PRICE_CACHE_TTL_SECONDS=60
+      - DEBUG=false
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

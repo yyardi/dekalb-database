@@ -52,12 +52,24 @@ CREATE TABLE portfolio_snapshots (
     daily_pnl_pct   DECIMAL(10, 6),                     -- pct vs prior day NAV
     spy_close       DECIMAL(18, 4),                     -- SPY closing price (for overlay calc)
     spy_daily_pct   DECIMAL(10, 6),                     -- SPY daily % change (for overlay)
-    created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-    UNIQUE(snapshot_date, account_id)
+    created_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+    -- NOTE: no inline UNIQUE here — PostgreSQL treats NULL != NULL in standard
+    -- UNIQUE constraints, so ON CONFLICT (snapshot_date, account_id) silently
+    -- never fires for combined rows (account_id IS NULL). Partial indexes below.
 );
 
 CREATE INDEX idx_snapshots_date         ON portfolio_snapshots(snapshot_date DESC);
 CREATE INDEX idx_snapshots_account_date ON portfolio_snapshots(account_id, snapshot_date DESC);
+
+-- Unique combined snapshot per day (account_id IS NULL = combined portfolio)
+CREATE UNIQUE INDEX idx_snapshots_uq_combined
+    ON portfolio_snapshots (snapshot_date)
+    WHERE account_id IS NULL;
+
+-- Unique per-account snapshot per day
+CREATE UNIQUE INDEX idx_snapshots_uq_account
+    ON portfolio_snapshots (snapshot_date, account_id)
+    WHERE account_id IS NOT NULL;
 
 
 -- fidelity_imports: audit log for CSV uploads

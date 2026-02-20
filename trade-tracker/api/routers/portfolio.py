@@ -292,3 +292,103 @@ async def get_snapshots(
     except Exception as exc:
         logger.error("snapshots error: %s", exc)
         raise HTTPException(status_code=500, detail="Error fetching snapshots")
+
+
+@router.post("/snapshots/generate", tags=["portfolio"])
+async def generate_snapshot(
+    snapshot_date: Optional[date] = Query(None, description="Date to generate for (default: today)"),
+    pool=Depends(get_pool),
+):
+    """
+    Compute and store a NAV snapshot for the given date (default: today).
+
+    This endpoint powers all portfolio metrics and performance graphs.
+    Run it once per trading day (e.g. via a nightly cron) to keep the
+    performance history up to date.
+
+    What it does:
+    - Derives each account's equity value from current positions (weighted avg cost x live price)
+    - Fetches SPY close for the date (for benchmark overlay)
+    - Writes one row per account + one combined row to portfolio_snapshots
+    - Subsequent calls for the same date UPSERT (safe to re-run)
+    """
+    from services.portfolio_metrics import upsert_snapshot
+
+    target_date = snapshot_date or date.today()
+
+    try:
+        account_rows = await pool.fetch(
+            "SELECT DISTINCT account_id FROM trades ORDER BY account_id"
+        )
+        account_ids = [r["account_id"] for r in account_rows]
+
+        if not account_ids:
+            raise HTTPException(status_code=422, detail="No trades found — import trades first before generating snapshots")
+
+        generated = []
+        combined_equity = Decimal(0)
+        combined_nav = Decimal(0)
+
+        for acct_id in account_ids:
+            # Previous snapshot for daily P&L calc
+            prev_snap = await pool.fetchrow(
+                """
+                SELECT total_nav FROM portfolio_snapshots
+                WHERE account_id = $1 AND snapshot_date < $2
+                ORDER BY snapshot_date DESC LIMIT 1
+                """,
+                acct_id, target_date,
+            )
+            prev_nav = Decimal(str(prev_snap["total_nav"])) if prev_snap else None
+
+            # Derive current equity from position quantities x live prices
+            positions = await _compute_positions(pool, acct_id)
+            equity = sum((p.market_value or Decimal(0)) for p in positions)
+
+            # For NAV: equity + (cash is unknown unless IBKR gateway is on, so use equity as proxy)
+            nav = equity
+
+            await upsert_snapshot(
+                pool=pool,
+                snapshot_date=target_date,
+                total_nav=nav,
+                account_id=acct_id,
+                equity_value=equity,
+                prev_nav=prev_nav,
+            )
+            combined_equity += equity
+            combined_nav += nav
+            generated.append(acct_id)
+
+        # Combined portfolio snapshot (account_id = None)
+        prev_combined = await pool.fetchrow(
+            """
+            SELECT total_nav FROM portfolio_snapshots
+            WHERE account_id IS NULL AND snapshot_date < $1
+            ORDER BY snapshot_date DESC LIMIT 1
+            """,
+            target_date,
+        )
+        prev_combined_nav = Decimal(str(prev_combined["total_nav"])) if prev_combined else None
+
+        await upsert_snapshot(
+            pool=pool,
+            snapshot_date=target_date,
+            total_nav=combined_nav,
+            account_id=None,
+            equity_value=combined_equity,
+            prev_nav=prev_combined_nav,
+        )
+
+        logger.info("Generated snapshots for %s: accounts=%s", target_date, generated)
+        return {
+            "snapshot_date": target_date.isoformat(),
+            "accounts_processed": generated,
+            "combined_nav": float(combined_nav),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("snapshot generation error: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Error generating snapshot: {exc}")

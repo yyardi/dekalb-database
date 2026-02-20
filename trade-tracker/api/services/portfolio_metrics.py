@@ -158,20 +158,29 @@ async def upsert_snapshot(
                     (spy_close - prev_spy_close) / prev_spy_close * 100
                 ).quantize(Decimal("0.000001"))
 
+    # ON CONFLICT must reference different partial indexes depending on whether
+    # account_id is NULL (combined portfolio) or NOT NULL (per-account).
+    # A plain UNIQUE(date, account_id) silently fails for NULLs in PostgreSQL
+    # because NULL != NULL in standard equality — so we use partial indexes.
+    if account_id is None:
+        conflict_clause = "ON CONFLICT (snapshot_date) WHERE account_id IS NULL"
+    else:
+        conflict_clause = "ON CONFLICT (snapshot_date, account_id) WHERE account_id IS NOT NULL"
+
     await pool.execute(
-        """
+        f"""
         INSERT INTO portfolio_snapshots
             (snapshot_date, account_id, total_nav, cash_balance, equity_value,
              daily_pnl, daily_pnl_pct, spy_close, spy_daily_pct)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        ON CONFLICT (snapshot_date, account_id)
+        {conflict_clause}
         DO UPDATE SET
-            total_nav    = EXCLUDED.total_nav,
-            cash_balance = EXCLUDED.cash_balance,
-            equity_value = EXCLUDED.equity_value,
-            daily_pnl    = EXCLUDED.daily_pnl,
+            total_nav     = EXCLUDED.total_nav,
+            cash_balance  = EXCLUDED.cash_balance,
+            equity_value  = EXCLUDED.equity_value,
+            daily_pnl     = EXCLUDED.daily_pnl,
             daily_pnl_pct = EXCLUDED.daily_pnl_pct,
-            spy_close    = EXCLUDED.spy_close,
+            spy_close     = EXCLUDED.spy_close,
             spy_daily_pct = EXCLUDED.spy_daily_pct
         """,
         snapshot_date, account_id, total_nav, cash_balance, equity_value,

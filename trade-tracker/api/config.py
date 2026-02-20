@@ -1,9 +1,10 @@
 import os
 
-# PostgreSQL (shared with ingestion-service)
+# PostgreSQL - equities team's isolated database (trade_tracker)
+# The quant team uses the "trading" database; this service connects to "trade_tracker".
 DB_HOST = os.getenv("DB_HOST", "localhost")
 POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
-POSTGRES_DB = os.getenv("POSTGRES_DB", "trading")
+POSTGRES_DB = os.getenv("POSTGRES_DB", "trade_tracker")
 POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "postgres")
 

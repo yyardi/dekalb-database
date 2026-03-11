@@ -67,6 +67,26 @@ async def _ensure_db_exists() -> None:
         )
 
 
+async def _apply_schema_if_empty(conn: asyncpg.Connection) -> None:
+    """If the database has no tables yet, apply the schema DDL."""
+    table_count = await conn.fetchval(
+        "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'"
+    )
+    if table_count == 0:
+        if os.path.exists(_SCHEMA_FILE):
+            logger.warning(
+                "Database '%s' is empty — applying schema...", config.POSTGRES_DB
+            )
+            with open(_SCHEMA_FILE) as f:
+                ddl = f.read()
+            await conn.execute(ddl)
+            logger.info("Schema applied to '%s'", config.POSTGRES_DB)
+        else:
+            logger.warning(
+                "Schema file not found at %s — tables not initialised", _SCHEMA_FILE
+            )
+
+
 async def init_pool() -> None:
     """Create the connection pool. Called once at application startup."""
     global _pool
@@ -92,6 +112,10 @@ async def init_pool() -> None:
             min_size=config.DB_MIN_CONNECTIONS,
             max_size=config.DB_MAX_CONNECTIONS,
         )
+
+    # Also handle the case where DB exists but schema was never applied
+    async with _pool.acquire() as conn:
+        await _apply_schema_if_empty(conn)
 
     logger.info(
         "PostgreSQL pool created: %s:%s/%s",

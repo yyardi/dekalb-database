@@ -111,6 +111,8 @@ services:
       # Tune as needed
       - PRICE_CACHE_TTL_SECONDS=60
       - DEBUG=false
+    volumes:
+      - ./schemas/trade_tracker_schema.sql:/etc/schemas/trade_tracker_schema.sql:ro
     depends_on:
       postgres:
         condition: service_healthy

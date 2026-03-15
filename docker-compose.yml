@@ -104,10 +104,11 @@ services:
       - POSTGRES_DB=trade_tracker     # equities team's isolated database
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
-      # IBKR gateway - disabled by default, enable when gateway is running
-      - IBKR_GATEWAY_ENABLED=false
-      - IBKR_GATEWAY_URL=https://host.docker.internal:5000
-      - IBKR_ACCOUNT_ID=
+      # IBKR via Pangolin proxy (handles OAuth signing)
+      # Set IBKR_ENABLED=true once you have your account ID from your manager
+      - IBKR_ENABLED=false
+      - IBKR_PANGOLIN_URL=https://pangolin.dekalb.capital
+      - IBKR_ACCOUNT_ID=      # <-- fill in your account ID (e.g. U1234567)
       # Tune as needed
       - PRICE_CACHE_TTL_SECONDS=60
       - DEBUG=false

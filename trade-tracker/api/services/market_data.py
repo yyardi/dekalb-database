@@ -123,27 +123,42 @@ def get_historical_bars(
 # ---------------------------------------------------------------------------
 
 def _fetch_quote_ibkr(symbol: str) -> Optional[PriceQuote]:
-    """
-    TODO: Implement IBKR Client Portal Gateway market data lookup.
+    """Fetch a live price quote from IBKR via Pangolin."""
+    from services.ibkr_client import ibkr_client
 
-    Steps to implement:
-    1. Look up the contract ID:
-       GET {IBKR_GATEWAY_URL}/v1/api/trsrv/stocks?symbols={symbol}
-    2. Subscribe to market data snapshot:
-       GET {IBKR_GATEWAY_URL}/v1/api/iserver/marketdata/snapshot?conids={conid}&fields=31,84,86
-       Field 31 = last price, 84 = bid, 86 = ask
-    3. Parse response and return PriceQuote
+    conid = ibkr_client.get_conid(symbol)
+    if conid is None:
+        logger.warning("IBKR: could not find conid for %s, falling back to yfinance", symbol)
+        return None
 
-    Auth: The gateway handles all auth. Requests go to localhost:5000.
-    The gateway must be running and authenticated (2FA).
-    See: https://www.interactivebrokers.com/campus/ibkr-api-page/web-api
+    snap = ibkr_client.get_market_snapshot(conid)
+    if snap is None:
+        logger.warning("IBKR: no snapshot for %s (conid=%s)", symbol, conid)
+        return None
 
-    Rate limit: 10 requests/second global. Cache aggressively.
-    """
-    logger.warning(
-        "IBKR gateway not enabled. Set IBKR_GATEWAY_ENABLED=true and run the gateway."
+    # Field 31 = last price
+    raw_price = snap.get("31")
+    if raw_price is None:
+        logger.warning("IBKR: snapshot for %s has no price field", symbol)
+        return None
+
+    try:
+        price = Decimal(str(raw_price))
+    except Exception:
+        return None
+
+    quote = PriceQuote(
+        symbol=symbol,
+        price=price,
+        change=None,       # snapshot doesn't include change; would need prev close
+        change_pct=None,
+        previous_close=None,
+        source="ibkr",
+        as_of=datetime.utcnow(),
     )
-    return None
+    _store_quote(symbol, quote)
+    logger.debug("IBKR price for %s: %s", symbol, price)
+    return quote
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +176,7 @@ def get_quote(symbol: str) -> Optional[PriceQuote]:
         logger.debug("Cache hit for %s", symbol)
         return cached
 
-    if config.IBKR_GATEWAY_ENABLED:
+    if config.IBKR_ENABLED:
         quote = _fetch_quote_ibkr(symbol)
         if quote:
             return quote

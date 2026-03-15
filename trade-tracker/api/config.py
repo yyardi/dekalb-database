@@ -12,11 +12,11 @@ POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "postgres")
 DB_MIN_CONNECTIONS = int(os.getenv("DB_MIN_CONNECTIONS", "2"))
 DB_MAX_CONNECTIONS = int(os.getenv("DB_MAX_CONNECTIONS", "10"))
 
-# IBKR Client Portal Gateway
-# Run `java -jar ibgateway.jar` locally. 2FA required on startup.
-# Set IBKR_GATEWAY_ENABLED=true once the gateway is running.
-IBKR_GATEWAY_URL = os.getenv("IBKR_GATEWAY_URL", "https://localhost:5000")
-IBKR_GATEWAY_ENABLED = os.getenv("IBKR_GATEWAY_ENABLED", "false").lower() == "true"
+# IBKR via Pangolin proxy
+# Pangolin handles OAuth signing — your app just makes plain HTTP calls to it.
+# Set IBKR_ENABLED=true once you have your account ID.
+IBKR_PANGOLIN_URL = os.getenv("IBKR_PANGOLIN_URL", "https://pangolin.dekalb.capital")
+IBKR_ENABLED = os.getenv("IBKR_ENABLED", "false").lower() == "true"
 IBKR_ACCOUNT_ID = os.getenv("IBKR_ACCOUNT_ID", "")
 
 # yfinance / market data cache

@@ -1,89 +1,88 @@
 """
-IBKR Client Portal Gateway client.
+IBKR client via Pangolin proxy.
 
-STATUS: PLACEHOLDER - not yet active.
-Set IBKR_GATEWAY_ENABLED=true once the gateway is running.
+Pangolin is a reverse proxy that handles IBKR OAuth signing.
+Your app calls Pangolin with plain HTTPS requests; Pangolin signs them
+and forwards to the IBKR Client Portal Web API.
 
-=============================================================================
-HOW TO ENABLE IBKR INTEGRATION
-=============================================================================
+To activate:
+  1. Make sure you're connected to the team VPN (Tailscale)
+  2. Set IBKR_ENABLED=true in your environment
+  3. Set IBKR_ACCOUNT_ID=U1234567 (get from your manager)
+  4. Pangolin URL defaults to https://pangolin.dekalb.capital
 
-Step 1: Download & run the Client Portal Gateway
-    - Download from: https://www.interactivebrokers.com/en/trading/ib-api.php
-      (Client Portal API section, "Download the Gateway")
-    - Run: java -jar root/run.sh  (Linux/Mac) or root\\run.bat (Windows)
-    - Default URL: https://localhost:5000
-    - Gateway requires 2FA login on first start (and after session expires)
-    - Keep it running as a systemd service in production
-
-Step 2: Auth flow
-    - After starting gateway, navigate to https://localhost:5000 in a browser
-    - Log in with your IBKR credentials + 2FA
-    - Session lasts ~24 hours; the gateway handles renewal
-
-Step 3: Set environment variables
-    - IBKR_GATEWAY_ENABLED=true
-    - IBKR_GATEWAY_URL=https://localhost:5000
-    - IBKR_ACCOUNT_ID=your_account_id (e.g. U1234567)
-
-Step 4: SSL note
-    - Gateway uses a self-signed cert by default
-    - You'll need verify=False in requests (or add the cert to trust store)
-    - Never expose the gateway externally - it must stay on localhost
-
-=============================================================================
-KEY ENDPOINTS (Client Portal Web API v1)
-=============================================================================
-
-Auth / session:
-  GET  /v1/api/iserver/auth/status          - check if authenticated
-  POST /v1/api/iserver/reauthenticate       - re-auth if session stale
-
-Accounts:
-  GET  /v1/api/portfolio/accounts           - list accounts (MUST call first)
-  GET  /v1/api/portfolio/{acctId}/summary   - NAV, cash, margin
-  GET  /v1/api/portfolio/{acctId}/positions/0 - current positions
-
-Market data:
-  GET  /v1/api/trsrv/stocks?symbols=AAPL    - lookup contract IDs
-  GET  /v1/api/iserver/marketdata/snapshot?conids={conid}&fields=31,84,86
-    Field 31 = last price, 84 = bid, 86 = ask
-
-Historical data (for P&L / metrics):
-  GET  /v1/api/iserver/marketdata/history?conid={id}&period=1y&bar=1d
-
-Trade history:
-  GET  /v1/api/iserver/account/trades       - recent trades (last 24h)
-  For longer history: use Flex Queries via Account Management portal
-
-Rate limits: 10 requests/second. Penalty box for 15 min if exceeded.
-=============================================================================
+The API endpoints mirror IBKR's Client Portal Web API v1:
+  https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/
 """
 from __future__ import annotations
 
 import logging
 from typing import Any, Optional
 
+import requests
+
 import config
 
 logger = logging.getLogger(__name__)
 
+# Shared session — keeps connection alive between calls
+_session: Optional[requests.Session] = None
 
-class IBKRGatewayClient:
+
+def _get_session() -> requests.Session:
+    global _session
+    if _session is None:
+        _session = requests.Session()
+        _session.headers.update({"User-Agent": "dekalb-trade-tracker/1.0"})
+    return _session
+
+
+class IBKRClient:
     """
-    Thin wrapper around the IBKR Client Portal Gateway REST API.
-    All methods are no-ops if IBKR_GATEWAY_ENABLED=false.
+    Thin wrapper around the IBKR Client Portal Web API, routed through Pangolin.
+    All methods return None / [] when IBKR is disabled — callers should handle gracefully.
     """
 
     def __init__(self) -> None:
-        self.base_url = config.IBKR_GATEWAY_URL
-        self.enabled = config.IBKR_GATEWAY_ENABLED
-        self._session: Any = None  # requests.Session when implemented
+        self.base_url = config.IBKR_PANGOLIN_URL.rstrip("/")
+        self.enabled = config.IBKR_ENABLED
 
-    def _not_enabled(self, method: str) -> None:
-        logger.warning(
-            "IBKR gateway disabled. Set IBKR_GATEWAY_ENABLED=true to use %s.", method
-        )
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _get(self, path: str, **kwargs) -> Optional[Any]:
+        if not self.enabled:
+            return None
+        url = f"{self.base_url}{path}"
+        try:
+            resp = _get_session().get(url, timeout=10, **kwargs)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.ConnectionError:
+            logger.error("Cannot reach Pangolin at %s — are you on the VPN?", self.base_url)
+            return None
+        except requests.exceptions.Timeout:
+            logger.error("Pangolin request timed out [%s]", path)
+            return None
+        except requests.exceptions.HTTPError as exc:
+            logger.error("IBKR HTTP error [%s]: %s", path, exc)
+            return None
+        except Exception as exc:
+            logger.error("IBKR request failed [%s]: %s", path, exc)
+            return None
+
+    def _post(self, path: str, json: Optional[dict] = None) -> Optional[Any]:
+        if not self.enabled:
+            return None
+        url = f"{self.base_url}{path}"
+        try:
+            resp = _get_session().post(url, json=json or {}, timeout=10)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            logger.error("IBKR POST failed [%s]: %s", path, exc)
+            return None
 
     # ------------------------------------------------------------------
     # Auth
@@ -92,17 +91,13 @@ class IBKRGatewayClient:
     def auth_status(self) -> Optional[dict]:
         """
         GET /v1/api/iserver/auth/status
-        Returns auth status dict or None if gateway disabled.
-
-        TODO: implement with:
-            import requests
-            resp = self._session.get(f"{self.base_url}/v1/api/iserver/auth/status", verify=False)
-            return resp.json()
+        Returns dict with 'authenticated', 'connected', 'competing' fields.
         """
-        if not self.enabled:
-            self._not_enabled("auth_status")
-            return None
-        raise NotImplementedError("IBKR auth_status not yet implemented")
+        return self._get("/v1/api/iserver/auth/status")
+
+    def reauthenticate(self) -> Optional[dict]:
+        """POST /v1/api/iserver/reauthenticate — use if session goes stale."""
+        return self._post("/v1/api/iserver/reauthenticate")
 
     # ------------------------------------------------------------------
     # Accounts
@@ -111,49 +106,48 @@ class IBKRGatewayClient:
     def get_accounts(self) -> list[dict]:
         """
         GET /v1/api/portfolio/accounts
-        Must be called before any portfolio endpoint to initialize the session.
-
-        TODO: implement and return list of account dicts with 'id', 'accountId', etc.
+        MUST be called before any per-account portfolio endpoint to warm up the session.
+        Returns list of account dicts with 'id', 'accountId', 'type', etc.
         """
-        if not self.enabled:
-            self._not_enabled("get_accounts")
+        data = self._get("/v1/api/portfolio/accounts")
+        if data is None:
             return []
-        raise NotImplementedError("IBKR get_accounts not yet implemented")
+        return data if isinstance(data, list) else [data]
 
     def get_account_summary(self, account_id: str) -> Optional[dict]:
         """
         GET /v1/api/portfolio/{accountId}/summary
-        Returns NAV, cash, total equity, margin requirements.
+        Returns NAV, cash, equity, margin.
 
-        Key fields to extract:
-          totalcashvalue.amount  -> cash_balance
-          netliquidation.amount  -> total_nav
-          equitywithloanvalue.amount -> equity_value
+        Key fields (each is a dict with 'amount' and 'currency'):
+          netliquidation       -> total NAV
+          totalcashvalue       -> cash balance
+          equitywithloanvalue  -> equity value
+          grosspositionvalue   -> gross market value
         """
-        if not self.enabled:
-            self._not_enabled("get_account_summary")
-            return None
-        raise NotImplementedError("IBKR get_account_summary not yet implemented")
+        self.get_accounts()  # required warm-up
+        return self._get(f"/v1/api/portfolio/{account_id}/summary")
 
     def get_positions(self, account_id: str) -> list[dict]:
         """
         GET /v1/api/portfolio/{accountId}/positions/0
-        Returns list of current positions.
+        Returns list of current open positions.
 
         Key fields per position:
-          conid       -> contract ID
-          ticker      -> symbol
-          position    -> quantity (negative = short)
-          mktPrice    -> current market price
-          mktValue    -> market value
-          avgCost     -> average cost basis
+          ticker / contractDesc  -> symbol
+          conid                  -> IBKR contract ID
+          position               -> quantity (negative = short)
+          mktPrice               -> current market price
+          mktValue               -> total market value
+          avgCost                -> average cost basis
           unrealizedPnl
           realizedPnl
         """
-        if not self.enabled:
-            self._not_enabled("get_positions")
+        self.get_accounts()  # required warm-up
+        data = self._get(f"/v1/api/portfolio/{account_id}/positions/0")
+        if data is None:
             return []
-        raise NotImplementedError("IBKR get_positions not yet implemented")
+        return data if isinstance(data, list) else []
 
     # ------------------------------------------------------------------
     # Market data
@@ -162,23 +156,38 @@ class IBKRGatewayClient:
     def get_conid(self, symbol: str) -> Optional[int]:
         """
         GET /v1/api/trsrv/stocks?symbols={symbol}
-        Returns the contract ID for a symbol. Required before market data calls.
+        Look up IBKR contract ID — required before market snapshot calls.
+        Response format: {"AAPL": [{"contracts": [{"conid": 265598, ...}]}]}
         """
-        if not self.enabled:
-            self._not_enabled("get_conid")
+        data = self._get("/v1/api/trsrv/stocks", params={"symbols": symbol})
+        if not data:
             return None
-        raise NotImplementedError("IBKR get_conid not yet implemented")
+        try:
+            contracts = data.get(symbol.upper(), [])
+            if contracts:
+                return contracts[0]["contracts"][0]["conid"]
+        except (KeyError, IndexError, TypeError):
+            logger.warning("Unexpected conid response for %s: %s", symbol, data)
+        return None
 
     def get_market_snapshot(self, conid: int) -> Optional[dict]:
         """
         GET /v1/api/iserver/marketdata/snapshot?conids={conid}&fields=31,84,86
         Field 31 = last price, 84 = bid, 86 = ask.
-        Note: first call may return empty - call twice (IBKR gateway quirk).
+
+        IBKR quirk: first call may return the row with no price yet (subscription
+        is being set up). We retry once if that happens.
         """
-        if not self.enabled:
-            self._not_enabled("get_market_snapshot")
+        params = {"conids": conid, "fields": "31,84,86"}
+        data = self._get("/v1/api/iserver/marketdata/snapshot", params=params)
+        if not data or not isinstance(data, list):
             return None
-        raise NotImplementedError("IBKR get_market_snapshot not yet implemented")
+        # Retry once if price field is missing (IBKR subscription warm-up)
+        if not data[0].get("31"):
+            data = self._get("/v1/api/iserver/marketdata/snapshot", params=params)
+            if not data or not isinstance(data, list):
+                return None
+        return data[0]
 
     # ------------------------------------------------------------------
     # Trade history
@@ -187,15 +196,23 @@ class IBKRGatewayClient:
     def get_recent_trades(self, account_id: str) -> list[dict]:
         """
         GET /v1/api/iserver/account/trades
-        Returns trades from the last ~24 hours.
-        For full history, use Flex Queries via the IBKR Account Management portal
-        (not available through this API).
+        Returns fills from roughly the last 24 hours.
+
+        Key fields per trade:
+          execution_id / orderId  -> unique ID (used for dedup)
+          symbol / ticker         -> instrument
+          side                    -> "BOT" (buy) or "SLD" (sell)
+          size                    -> quantity filled
+          price                   -> fill price
+          commission              -> commissions charged
+          trade_time / tradeTime  -> ISO timestamp
         """
-        if not self.enabled:
-            self._not_enabled("get_recent_trades")
+        self.get_accounts()  # required warm-up
+        data = self._get("/v1/api/iserver/account/trades")
+        if data is None:
             return []
-        raise NotImplementedError("IBKR get_recent_trades not yet implemented")
+        return data if isinstance(data, list) else []
 
 
-# Singleton client instance
-ibkr_client = IBKRGatewayClient()
+# Singleton — imported by routers and services
+ibkr_client = IBKRClient()

@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import config
 import db
-from routers import imports, market, portfolio, trades
+from routers import ibkr, imports, market, portfolio, trades
 
 logging.basicConfig(
     level=logging.DEBUG if config.DEBUG else logging.INFO,
@@ -52,16 +52,17 @@ app.include_router(portfolio.router)
 app.include_router(trades.router)
 app.include_router(imports.router)
 app.include_router(market.router)
+app.include_router(ibkr.router)
 
 
 @app.on_event("startup")
 async def startup():
     await db.init_pool()
     logger.info("Trade Tracker API started. Docs at /docs")
-    if config.IBKR_GATEWAY_ENABLED:
-        logger.info("IBKR gateway ENABLED at %s", config.IBKR_GATEWAY_URL)
+    if config.IBKR_ENABLED:
+        logger.info("IBKR ENABLED via Pangolin at %s (account: %s)", config.IBKR_PANGOLIN_URL, config.IBKR_ACCOUNT_ID)
     else:
-        logger.info("IBKR gateway DISABLED - using yfinance for market data")
+        logger.info("IBKR DISABLED — using yfinance for market data. Set IBKR_ENABLED=true to activate.")
 
 
 @app.on_event("shutdown")
@@ -83,6 +84,6 @@ async def health():
     return {
         "status": "ok" if db_ok else "degraded",
         "database": "connected" if db_ok else "unreachable",
-        "ibkr_gateway": "enabled" if config.IBKR_GATEWAY_ENABLED else "disabled (yfinance fallback)",
+        "ibkr": "enabled" if config.IBKR_ENABLED else "disabled (yfinance fallback)",
         "version": "0.1.0",
     }

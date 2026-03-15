@@ -11,3 +11,5 @@ questdb-data/
 *.p12
 *.jks
 ibkr-gateway/conf.yaml
+ibkr-gateway/clientportal.gw/
+ibkr-gateway/conf.yaml

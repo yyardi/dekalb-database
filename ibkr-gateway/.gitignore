@@ -1,5 +1,0 @@
-# Never commit private keys
-*.pem
-*.key
-*.p12
-*.jks

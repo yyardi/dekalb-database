@@ -137,7 +137,7 @@ def parse_fidelity_csv(
         for candidate in candidates:
             original = fieldnames_normalised.get(candidate)
             if original and original in row:
-                return row[original].strip()
+                return (row[original] or "").strip()
         return ""
 
     trades: list[TradeCreate] = []

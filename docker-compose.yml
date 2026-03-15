@@ -134,11 +134,14 @@ services:
       - POSTGRES_DB=trade_tracker     # equities team's isolated database
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
-      # IBKR via Pangolin proxy (handles OAuth signing)
-      # Set IBKR_ENABLED=true once you have your account ID from your manager
+      # IBKR Client Portal Gateway (runs locally on your machine, port 5000)
+      # 1. Download gateway from https://www.interactivebrokers.com/en/trading/ib-api.php
+      # 2. Place your .pem files in ibkr-gateway/ and fill in ibkr-gateway/conf.yaml
+      # 3. Run the gateway: cd ibkr-gateway && java -jar ibkr-cp-web-api.jar root/conf
+      # 4. Fill in IBKR_ACCOUNT_ID below, then flip IBKR_ENABLED to true
       - IBKR_ENABLED=false
-      - IBKR_PANGOLIN_URL=https://pangolin.dekalb.capital
-      - IBKR_ACCOUNT_ID=      # <-- fill in your account ID (e.g. U1234567)
+      - IBKR_GATEWAY_URL=https://host.docker.internal:5000   # gateway on your Mac/PC
+      - IBKR_ACCOUNT_ID=      # <-- e.g. U1234567
       # Tune as needed
       - PRICE_CACHE_TTL_SECONDS=60
       - DEBUG=false

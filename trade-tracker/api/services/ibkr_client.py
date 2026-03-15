@@ -34,6 +34,8 @@ def _get_session() -> requests.Session:
     if _session is None:
         _session = requests.Session()
         _session.headers.update({"User-Agent": "dekalb-trade-tracker/1.0"})
+        # The local IBKR gateway uses a self-signed cert — skip verification
+        _session.verify = False
     return _session
 
 
@@ -44,7 +46,7 @@ class IBKRClient:
     """
 
     def __init__(self) -> None:
-        self.base_url = config.IBKR_PANGOLIN_URL.rstrip("/")
+        self.base_url = config.IBKR_GATEWAY_URL.rstrip("/")
         self.enabled = config.IBKR_ENABLED
 
     # ------------------------------------------------------------------

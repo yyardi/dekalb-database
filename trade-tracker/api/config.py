@@ -12,10 +12,11 @@ POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "postgres")
 DB_MIN_CONNECTIONS = int(os.getenv("DB_MIN_CONNECTIONS", "2"))
 DB_MAX_CONNECTIONS = int(os.getenv("DB_MAX_CONNECTIONS", "10"))
 
-# IBKR via Pangolin proxy
-# Pangolin handles OAuth signing — your app just makes plain HTTP calls to it.
-# Set IBKR_ENABLED=true once you have your account ID.
-IBKR_PANGOLIN_URL = os.getenv("IBKR_PANGOLIN_URL", "https://pangolin.dekalb.capital")
+# IBKR Client Portal Gateway (runs locally on your machine)
+# Gateway download: https://www.interactivebrokers.com/en/trading/ib-api.php
+# IBKR_GATEWAY_URL: use https://host.docker.internal:5000 when running in Docker
+#                   use https://localhost:5000 when running the API locally
+IBKR_GATEWAY_URL = os.getenv("IBKR_GATEWAY_URL", "https://localhost:5000")
 IBKR_ENABLED = os.getenv("IBKR_ENABLED", "false").lower() == "true"
 IBKR_ACCOUNT_ID = os.getenv("IBKR_ACCOUNT_ID", "")
 

@@ -95,6 +95,20 @@ services:
   #   Run the IB Client Portal Gateway on your host machine.
   #   Set IBKR_GATEWAY_ENABLED=true and IBKR_GATEWAY_URL below.
   # ---------------------------------------------------------------
+  # ---------------------------------------------------------------
+  # Trade Tracker Frontend - React dashboard (equities team)
+  # http://localhost:3000
+  #
+  # Built with Vite + React + Recharts + Tailwind.
+  # nginx serves the static build and proxies /api/* → trade-tracker:8000
+  # ---------------------------------------------------------------
+  trade-tracker-frontend:
+    build: ./trade-tracker/frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - trade-tracker
+
   trade-tracker:
     build: ./trade-tracker/api
     ports:

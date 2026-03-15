@@ -21,6 +21,7 @@ import requests
 import yfinance as yf
 
 import config
+from models.schemas import HistoricalBar, PriceQuote
 
 # Spoof a browser User-Agent — Yahoo Finance blocks plain script/Docker requests
 _yf_session = requests.Session()
@@ -31,7 +32,6 @@ _yf_session.headers.update({
         "Chrome/120.0.0.0 Safari/537.36"
     )
 })
-from models.schemas import HistoricalBar, PriceQuote
 
 logger = logging.getLogger(__name__)
 

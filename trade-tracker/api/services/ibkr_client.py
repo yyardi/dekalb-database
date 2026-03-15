@@ -20,6 +20,11 @@ import logging
 from typing import Any, Optional
 
 import requests
+import urllib3
+
+# The local IBKR gateway uses a self-signed cert. We disable verification for
+# localhost-only calls and suppress the resulting warnings to keep logs clean.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 import config
 

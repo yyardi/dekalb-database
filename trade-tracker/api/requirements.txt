@@ -7,7 +7,7 @@ python-multipart==0.0.9     # required for UploadFile (CSV import)
 asyncpg==0.29.0
 
 # Market data
-yfinance==0.2.38
+yfinance==0.2.54
 
 # Data validation
 pydantic==2.7.1

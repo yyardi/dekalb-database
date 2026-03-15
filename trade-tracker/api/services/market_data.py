@@ -17,9 +17,20 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Optional
 
+import requests
 import yfinance as yf
 
 import config
+
+# Spoof a browser User-Agent — Yahoo Finance blocks plain script/Docker requests
+_yf_session = requests.Session()
+_yf_session.headers.update({
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
+})
 from models.schemas import HistoricalBar, PriceQuote
 
 logger = logging.getLogger(__name__)
@@ -46,7 +57,7 @@ def _store_quote(symbol: str, quote: PriceQuote) -> None:
 
 def _fetch_quote_yfinance(symbol: str) -> Optional[PriceQuote]:
     try:
-        ticker = yf.Ticker(symbol)
+        ticker = yf.Ticker(symbol, session=_yf_session)
         info = ticker.fast_info  # lighter call than .info
         price = info.last_price
         prev_close = info.previous_close
@@ -87,7 +98,7 @@ def get_historical_bars(
     interval: '1d', '1wk', '1mo'  (daily is most useful for portfolio metrics)
     """
     try:
-        ticker = yf.Ticker(symbol)
+        ticker = yf.Ticker(symbol, session=_yf_session)
         df = ticker.history(
             start=start.isoformat(),
             end=(end + timedelta(days=1)).isoformat(),  # yfinance end is exclusive

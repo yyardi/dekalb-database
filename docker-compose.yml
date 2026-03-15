@@ -86,16 +86,6 @@ services:
         condition: service_healthy
 
   # ---------------------------------------------------------------
-  # Trade Tracker API - equities team FastAPI backend
-  # Connects to: trade_tracker DB (PostgreSQL only, no QuestDB)
-  # Swagger docs: http://localhost:8000/docs
-  # Health check: http://localhost:8000/health
-  #
-  # IBKR Gateway (optional - for live IBKR data):
-  #   Run the IB Client Portal Gateway on your host machine.
-  #   Set IBKR_GATEWAY_ENABLED=true and IBKR_GATEWAY_URL below.
-  # ---------------------------------------------------------------
-  # ---------------------------------------------------------------
   # Trade Tracker Frontend - React dashboard (equities team)
   # http://localhost:3000
   #
@@ -109,6 +99,32 @@ services:
     depends_on:
       - trade-tracker
 
+  # ---------------------------------------------------------------
+  # Snapshot cron - runs POST /portfolio/snapshots/generate every hour
+  # Keeps the performance chart and metrics up to date automatically.
+  # Waits 60s on startup to give trade-tracker time to be ready.
+  # ---------------------------------------------------------------
+  snapshot-cron:
+    image: alpine/curl
+    depends_on:
+      - trade-tracker
+    restart: unless-stopped
+    entrypoint: >
+      sh -c "echo 'Snapshot cron starting, waiting 60s for API...' &&
+             sleep 60 &&
+             while true; do
+               echo \"[snapshot-cron] $$(date) — generating snapshot...\";
+               curl -s -X POST http://trade-tracker:8000/portfolio/snapshots/generate | head -c 200;
+               echo '';
+               sleep 3600;
+             done"
+
+  # ---------------------------------------------------------------
+  # Trade Tracker API - equities team FastAPI backend
+  # Connects to: trade_tracker DB (PostgreSQL only, no QuestDB)
+  # Swagger docs: http://localhost:8000/docs
+  # Health check: http://localhost:8000/health
+  # ---------------------------------------------------------------
   trade-tracker:
     build: ./trade-tracker/api
     ports:

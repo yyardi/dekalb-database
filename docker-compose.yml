@@ -141,7 +141,7 @@ services:
       # 4. Fill in IBKR_ACCOUNT_ID below, then flip IBKR_ENABLED to true
       - IBKR_ENABLED=false
       - IBKR_GATEWAY_URL=https://host.docker.internal:5000   # gateway on your Mac/PC
-      - IBKR_ACCOUNT_ID=      # <-- e.g. U1234567
+      - IBKR_ACCOUNT_ID=U16303670
       # Tune as needed
       - PRICE_CACHE_TTL_SECONDS=60
       - DEBUG=false

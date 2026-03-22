@@ -87,6 +87,27 @@ async def _apply_schema_if_empty(conn: asyncpg.Connection) -> None:
             )
 
 
+async def _apply_migrations(conn: asyncpg.Connection) -> None:
+    """
+    Idempotent migrations for schema changes added after initial deployment.
+    Safe to run on every startup.
+    """
+    # ibkr_tokens: stores OAuth 2.0 tokens for IBKR Web API (added for hosted deployment)
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS ibkr_tokens (
+            id            INTEGER      PRIMARY KEY DEFAULT 1,
+            access_token  TEXT         NOT NULL,
+            refresh_token TEXT,
+            token_type    VARCHAR(50)  NOT NULL DEFAULT 'Bearer',
+            expires_at    TIMESTAMPTZ,
+            account_id    VARCHAR(50),
+            scope         TEXT,
+            created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+            updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+        )
+    """)
+
+
 async def init_pool() -> None:
     """Create the connection pool. Called once at application startup."""
     global _pool
@@ -116,6 +137,7 @@ async def init_pool() -> None:
     # Also handle the case where DB exists but schema was never applied
     async with _pool.acquire() as conn:
         await _apply_schema_if_empty(conn)
+        await _apply_migrations(conn)
 
     logger.info(
         "PostgreSQL pool created: %s:%s/%s",

@@ -1,4 +1,6 @@
+import { useEffect, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
+import { get } from '../api/client'
 
 const NAV = [
   { to: '/', label: 'Dashboard', end: true },
@@ -6,7 +8,28 @@ const NAV = [
   { to: '/import', label: 'Import CSV', end: false },
 ]
 
+interface IBKRStatus {
+  enabled: boolean
+  authenticated: boolean
+  login_url?: string
+}
+
 export default function Layout() {
+  const [ibkrStatus, setIbkrStatus] = useState<IBKRStatus | null>(null)
+
+  useEffect(() => {
+    get<IBKRStatus>('/ibkr/status').then(setIbkrStatus).catch(() => null)
+  }, [])
+
+  const handleConnectIBKR = async () => {
+    try {
+      const data = await get<{ auth_url: string }>('/ibkr/auth/login')
+      window.location.href = data.auth_url
+    } catch (err) {
+      alert('Could not get IBKR login URL. Check that IBKR_CLIENT_ID and IBKR_CLIENT_SECRET are configured.')
+    }
+  }
+
   return (
     <div className="flex min-h-screen bg-gray-950 text-gray-100">
       {/* Sidebar */}
@@ -35,9 +58,28 @@ export default function Layout() {
           ))}
         </nav>
 
+        {/* IBKR connection status */}
+        {ibkrStatus?.enabled && (
+          <div className="mt-6 px-3">
+            {ibkrStatus.authenticated ? (
+              <div className="flex items-center gap-1.5 text-xs text-green-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block" />
+                IBKR Connected
+              </div>
+            ) : (
+              <button
+                onClick={handleConnectIBKR}
+                className="w-full text-xs bg-blue-600 hover:bg-blue-500 text-white py-1.5 px-2 rounded transition-colors"
+              >
+                Connect IBKR
+              </button>
+            )}
+          </div>
+        )}
+
         <div className="mt-auto px-3">
           <a
-            href="http://localhost:8000/docs"
+            href="/docs"
             target="_blank"
             rel="noreferrer"
             className="text-xs text-gray-600 hover:text-gray-400 transition-colors"

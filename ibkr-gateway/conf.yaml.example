@@ -8,10 +8,10 @@
 #   ./bin/run.sh root/conf       (Linux/Mac)
 #   bin\run.bat root/conf        (Windows)
 #
-# Then open https://localhost:5000 in your browser and log in with
+# Then open https://localhost:5001 in your browser and log in with
 # your IBKR username + password + 2FA.
 #
-# Only edit the bundled conf.yaml if you need to change the port (default 5000).
+# Only edit the bundled conf.yaml if you need to change the port (default 5001).
 # The only field most people ever change:
 #
-#   listenPort: 5000
+#   listenPort: 5001

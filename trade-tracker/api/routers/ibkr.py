@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 
 import config
@@ -82,7 +82,7 @@ def auth_login():
 
 
 @router.get("/auth/callback", summary="IBKR OAuth callback — stores tokens and redirects to frontend")
-async def auth_callback(code: str, state: str, pool=Depends(get_pool)):
+async def auth_callback(code: str, state: str, background_tasks: BackgroundTasks, pool=Depends(get_pool)):
     """
     IBKR redirects here after the user logs in.
     Exchanges the authorization code for tokens, persists them to DB,
@@ -129,6 +129,10 @@ async def auth_callback(code: str, state: str, pool=Depends(get_pool)):
     set_token(access_token, refresh_token, expires_at)
 
     logger.info("IBKR OAuth complete — tokens stored. Account: %s", config.IBKR_ACCOUNT_ID)
+
+    # Kick off an initial trade sync in the background so recent trades
+    # appear immediately after connecting — no manual sync needed.
+    background_tasks.add_task(_sync_ibkr_trades, pool)
 
     # Redirect back to the frontend with a success flag
     return RedirectResponse(url=f"{config.FRONTEND_URL}?ibkr_connected=true")
@@ -239,17 +243,15 @@ def get_live_positions():
 
 
 # ---------------------------------------------------------------------------
-# Trade sync
+# Trade sync — shared helper + manual endpoint
 # ---------------------------------------------------------------------------
 
-@router.post("/sync/trades", summary="Pull recent IBKR fills into the trades table")
-async def sync_recent_trades(pool=Depends(get_pool)):
+async def _sync_ibkr_trades(pool) -> dict:
     """
-    Fetches the last ~24 hours of fills from IBKR and inserts any new ones
-    into the trades table. Existing trades (matched by ibkr_order_id) are skipped.
+    Pull recent fills from IBKR and insert new ones into the trades table.
+    Called automatically after OAuth connect and by the hourly cron.
+    Existing trades (matched by ibkr_order_id) are skipped.
     """
-    _require_ibkr()
-
     raw_trades = ibkr_client.get_recent_trades(config.IBKR_ACCOUNT_ID)
     if not raw_trades:
         return {"inserted": 0, "skipped": 0, "total_from_ibkr": 0, "message": "No recent trades returned by IBKR"}
@@ -326,3 +328,14 @@ async def sync_recent_trades(pool=Depends(get_pool)):
         "total_from_ibkr": len(raw_trades),
         "errors": errors or None,
     }
+
+
+@router.post("/sync/trades", summary="Pull recent IBKR fills into the trades table (also runs automatically every hour)")
+async def sync_recent_trades(pool=Depends(get_pool)):
+    """
+    Fetches recent fills from IBKR and inserts any new ones into the trades table.
+    This runs automatically every hour via the cron container, and immediately after
+    connecting via OAuth. You can also call it manually if needed.
+    """
+    _require_ibkr()
+    return await _sync_ibkr_trades(pool)

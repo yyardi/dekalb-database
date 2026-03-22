@@ -47,9 +47,20 @@ IBKR_CREDENTIAL    = os.getenv("IBKR_CREDENTIAL", "")       # IBKR username
 IBKR_ACCOUNT_ID    = os.getenv("IBKR_ACCOUNT_ID", "")       # e.g. DFP321877
 IBKR_SERVER_IP     = os.getenv("IBKR_SERVER_IP", "")        # outbound IP of this server
 
-# RSA private key — full PEM content (literal newlines or \n-escaped both work)
-_raw_key = os.getenv("IBKR_PRIVATE_KEY", "")
-IBKR_PRIVATE_KEY = _raw_key.replace("\\n", "\n")            # normalise escaped newlines
+# RSA private key — accepts three formats:
+#   1. Base64-encoded PEM (ends with ==)  → just paste the whole thing as-is, no quotes
+#   2. Raw PEM with \n escapes            → -----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END...
+#   3. Raw PEM with actual newlines       → only works with quoted multiline in .env
+import base64 as _b64
+_raw_key = os.getenv("IBKR_PRIVATE_KEY", "").strip()
+if _raw_key and not _raw_key.startswith("-----"):
+    # Looks like base64-encoded — decode it to get the PEM string
+    try:
+        IBKR_PRIVATE_KEY = _b64.b64decode(_raw_key).decode("utf-8")
+    except Exception:
+        IBKR_PRIVATE_KEY = _raw_key.replace("\\n", "\n")
+else:
+    IBKR_PRIVATE_KEY = _raw_key.replace("\\n", "\n")
 
 # IBKR API base URLs — don't change these unless IBKR updates them
 IBKR_TOKEN_URL       = "https://api.ibkr.com/oauth2/api/v1/token"

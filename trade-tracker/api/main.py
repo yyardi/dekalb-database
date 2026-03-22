@@ -38,10 +38,11 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# Allow frontend dev server (UX team uses separate origin)
+# Allow the frontend (React dev server on :3000 and production on :80)
+# NOTE: allow_credentials=True requires explicit origins (not "*")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # tighten this to specific origins in production
+    allow_origins=["http://localhost:3000", "http://localhost:80", "http://localhost"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -60,7 +61,7 @@ async def startup():
     await db.init_pool()
     logger.info("Trade Tracker API started. Docs at /docs")
     if config.IBKR_ENABLED:
-        logger.info("IBKR ENABLED via Pangolin at %s (account: %s)", config.IBKR_PANGOLIN_URL, config.IBKR_ACCOUNT_ID)
+        logger.info("IBKR ENABLED — gateway at %s (account: %s)", config.IBKR_GATEWAY_URL, config.IBKR_ACCOUNT_ID)
     else:
         logger.info("IBKR DISABLED — using yfinance for market data. Set IBKR_ENABLED=true to activate.")
 

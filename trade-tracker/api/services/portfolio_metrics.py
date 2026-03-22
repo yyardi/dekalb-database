@@ -69,6 +69,8 @@ def _max_drawdown(nav_series: list[float]) -> float:
     for nav in nav_series:
         if nav > peak:
             peak = nav
+        if peak == 0:
+            continue  # skip — nav=0 means no real data (yfinance failed that day)
         dd = (nav - peak) / peak
         if dd < max_dd:
             max_dd = dd
@@ -306,7 +308,7 @@ async def calculate_metrics(
     # Total return
     first_nav = float(rows[0]["total_nav"])
     last_nav = float(rows[-1]["total_nav"])
-    total_return = (last_nav - first_nav) / first_nav * 100 if first_nav else None
+    total_return = (last_nav - first_nav) / first_nav * 100 if first_nav > 0 else None
 
     # SPY total return
     first_spy = float(rows[0]["spy_close"]) if rows[0]["spy_close"] else None

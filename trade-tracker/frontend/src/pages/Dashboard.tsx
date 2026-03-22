@@ -69,17 +69,19 @@ export default function Dashboard() {
   }, [])
 
   // Load metrics + performance when period or account changes
+  // Metrics failure is non-fatal — just show dashes, no red error bar
   useEffect(() => {
     setChartLoading(true)
-    Promise.all([
+    Promise.allSettled([
       get<PortfolioMetrics>(`/portfolio/metrics?period=${period}${accountParam}`),
       get<PerformancePoint[]>(`/portfolio/performance?period=${period}${accountParam}`),
     ])
-      .then(([m, p]) => {
-        setMetrics(m)
-        setPerformance(p)
+      .then(([metricsResult, perfResult]) => {
+        if (metricsResult.status === 'fulfilled') setMetrics(metricsResult.value)
+        else setMetrics(null)
+        if (perfResult.status === 'fulfilled') setPerformance(perfResult.value)
+        else setPerformance([])
       })
-      .catch((e) => setError(e.message))
       .finally(() => setChartLoading(false))
   }, [period, selectedAccount])
 

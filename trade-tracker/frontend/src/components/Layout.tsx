@@ -10,8 +10,7 @@ const NAV = [
 
 interface IBKRStatus {
   enabled: boolean
-  authenticated: boolean
-  login_url?: string
+  connected: boolean
 }
 
 export default function Layout() {
@@ -20,15 +19,6 @@ export default function Layout() {
   useEffect(() => {
     get<IBKRStatus>('/ibkr/status').then(setIbkrStatus).catch(() => null)
   }, [])
-
-  const handleConnectIBKR = async () => {
-    try {
-      const data = await get<{ auth_url: string }>('/ibkr/auth/login')
-      window.location.href = data.auth_url
-    } catch (err) {
-      alert('Could not get IBKR login URL. Check that IBKR_CLIENT_ID and IBKR_CLIENT_SECRET are configured.')
-    }
-  }
 
   return (
     <div className="flex min-h-screen bg-gray-950 text-gray-100">
@@ -58,22 +48,13 @@ export default function Layout() {
           ))}
         </nav>
 
-        {/* IBKR connection status */}
+        {/* IBKR connection status — automatic, no user action needed */}
         {ibkrStatus?.enabled && (
           <div className="mt-6 px-3">
-            {ibkrStatus.authenticated ? (
-              <div className="flex items-center gap-1.5 text-xs text-green-400">
-                <span className="w-1.5 h-1.5 rounded-full bg-green-400 inline-block" />
-                IBKR Connected
-              </div>
-            ) : (
-              <button
-                onClick={handleConnectIBKR}
-                className="w-full text-xs bg-blue-600 hover:bg-blue-500 text-white py-1.5 px-2 rounded transition-colors"
-              >
-                Connect IBKR
-              </button>
-            )}
+            <div className={`flex items-center gap-1.5 text-xs ${ibkrStatus.connected ? 'text-green-400' : 'text-yellow-500'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full inline-block ${ibkrStatus.connected ? 'bg-green-400' : 'bg-yellow-500'}`} />
+              {ibkrStatus.connected ? 'IBKR Connected' : 'IBKR Connecting...'}
+            </div>
           </div>
         )}
 

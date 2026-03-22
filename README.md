@@ -210,10 +210,10 @@ A web dashboard for tracking IBKR + Fidelity positions, P&L, and portfolio metri
 
 ### How data gets in
 
-**IBKR (automated after first setup):**
-- Connect once via OAuth (button in the sidebar)
-- On connect, recent trades sync immediately in the background
-- After that, new fills sync automatically every hour — nothing to do
+**IBKR (fully automated):**
+- Set credentials in `.env` (see IBKR Web API Setup section below)
+- API connects automatically on startup — no user action, no login page
+- New fills sync automatically every hour — nothing to do
 
 **IBKR full history (one-time):**
 - The API only returns recent trades
@@ -327,27 +327,63 @@ Note the Railway API URL — you'll need it in the next step.
 
 3. Deploy — this is the URL you share with the team.
 
-### Step 3 — Connect IBKR (one-time, ~2 min)
+### Step 3 — Configure IBKR credentials in Railway
 
-An admin opens the deployed URL, clicks **Connect IBKR** in the sidebar, logs in on IBKR's page (normal login + 2FA), gets redirected back. Tokens are stored in the DB. Recent trades sync immediately. Everyone on the team sees live data — no one else needs to do anything.
+In Railway → your service → Variables, add:
+```
+IBKR_ENABLED=true
+IBKR_CLIENT_ID=DekalbCapital-Paper   (or live value from ticket #619394)
+IBKR_CLIENT_KEY_ID=main              (or live value)
+IBKR_CREDENTIAL=dekalbcapitalpaper   (or live username)
+IBKR_ACCOUNT_ID=DFP321877            (or live account)
+IBKR_PRIVATE_KEY=<full privatekey.pem content with \n for newlines>
+IBKR_SERVER_IP=<Railway static outbound IP>
+```
+
+The API auto-connects on startup. No user action needed, no login page.
 
 ---
 
 ## IBKR Web API Setup
 
-The trade tracker uses IBKR's **Web API** — OAuth 2.0, no local Java process or gateway.
+IBKR's Web API uses **RSA key-based OAuth 2.0** — this is server-to-server authentication, not a browser login flow. There is no redirect URL, no login page, and no user action after initial setup.
 
-**Getting credentials:**
+**How it works:**
+1. Your RSA private key signs a JWT
+2. That JWT is sent to IBKR → they return a bearer token
+3. The bearer token + your IBKR username + your server's IP → creates an IBKR session
+4. The session auto-renews in the background every 60 seconds
 
-1. Log into [IBKR Client Portal](https://www.interactivebrokers.com/portal/)
-2. Go to **Settings → API → Register Application**
-   - If you don't see this: contact IBKR support and ask for "Web API / OAuth 2.0 access"
-3. Create an app:
-   - Redirect URIs (add both):
-     - `http://localhost:8000/ibkr/auth/callback` — for local dev
-     - `https://your-api.railway.app/ibkr/auth/callback` — for production
-4. You receive a **Client ID** and **Client Secret** → set as `IBKR_CLIENT_ID` and `IBKR_CLIENT_SECRET`
-5. Your **Account ID** is shown top-right in Client Portal (format: `U` + digits) → set as `IBKR_ACCOUNT_ID`
+**DeKalb already has approved credentials.** Ryan has the zip with the private key and ticket #619394 has the live account `clientId`, `clientKeyId`, and `credential`.
+
+**Setting it up:**
+
+1. Open Ryan's zip (password: `dcm1234`) — it contains `privatekey.pem` (and possibly the live credentials)
+2. Open your `.env` file and fill in:
+
+```
+IBKR_ENABLED=true
+
+# Paper account (ready to use now):
+IBKR_CLIENT_ID=DekalbCapital-Paper
+IBKR_CLIENT_KEY_ID=main
+IBKR_CREDENTIAL=dekalbcapitalpaper
+IBKR_ACCOUNT_ID=DFP321877
+
+# RSA private key — paste the FULL contents of privatekey.pem, with \n for each newline:
+IBKR_PRIVATE_KEY=-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----
+
+# The outbound IP of the machine running the trade-tracker API:
+# Local dev: google "what is my ip"
+# Railway: Settings → Networking → Outbound Static IP
+IBKR_SERVER_IP=YOUR.SERVER.IP.HERE
+```
+
+3. Restart the API — it connects automatically on startup. No further action needed.
+
+**Live account** (`clientId`, `clientKeyId`, `credential` from ticket #619394): same process, just swap those three values in `.env`. The RSA key file is the same for both paper and live.
+
+**Note on IP:** IBKR ties sessions to an IP address. If you're running locally, use your home IP. For Railway, you need their static outbound IP (Pro plan). If the IP changes, `POST /ibkr/connect` re-establishes the session with the new IP.
 
 ---
 
@@ -359,10 +395,8 @@ Full interactive docs at `/docs` (Swagger UI).
 |---|---|
 | `GET /health` | Health check |
 | **IBKR** | |
-| `GET /ibkr/status` | Is IBKR connected? |
-| `GET /ibkr/auth/login` | Returns OAuth URL — redirect user here to connect |
-| `GET /ibkr/auth/callback` | IBKR posts here after login — stores tokens, triggers initial sync |
-| `POST /ibkr/auth/disconnect` | Clear IBKR tokens |
+| `GET /ibkr/status` | Is IBKR connected? (auto-connects on startup) |
+| `POST /ibkr/connect` | Manually trigger reconnect (useful after credential change) |
 | `GET /ibkr/account` | Live NAV, cash, equity from IBKR |
 | `GET /ibkr/positions` | Live open positions from IBKR |
 | `POST /ibkr/sync/trades` | Pull recent fills now (also runs automatically every hour) |

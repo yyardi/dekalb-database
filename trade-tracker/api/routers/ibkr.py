@@ -1,38 +1,29 @@
 """
 IBKR router.
 
-Auth endpoints (OAuth 2.0 — one-time setup by an admin):
-  GET  /ibkr/auth/login        - Returns the IBKR OAuth URL; redirect the user there
-  GET  /ibkr/auth/callback     - IBKR posts back here after login; stores tokens, redirects to frontend
-  POST /ibkr/auth/disconnect   - Clear stored tokens
+Authentication is fully automatic (RSA key-based, server-side).
+No login page, no redirect, no user action needed.
 
-Data endpoints (available to all team members once connected):
-  GET  /ibkr/status            - Connection + auth status
-  GET  /ibkr/account           - Live NAV, cash, equity
-  GET  /ibkr/positions         - Live open positions
-  POST /ibkr/sync/trades       - Pull last ~24h of fills into the trades table
+Endpoints:
+  GET  /ibkr/status           - is IBKR connected?
+  POST /ibkr/connect          - manually trigger a reconnect (useful after config change)
+  GET  /ibkr/account          - live NAV, cash, equity
+  GET  /ibkr/positions        - live open positions
+  POST /ibkr/sync/trades      - pull recent fills into trades table
+                                (also runs automatically every hour via cron)
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Depends, HTTPException
 
 import config
 import db
-from services.ibkr_client import (
-    ibkr_client,
-    is_authenticated,
-    generate_auth_url,
-    validate_state,
-    exchange_code_for_token,
-    set_token,
-    clear_token,
-)
+from services.ibkr_client import ibkr_client
 
 router = APIRouter(prefix="/ibkr", tags=["ibkr"])
 logger = logging.getLogger(__name__)
@@ -46,146 +37,67 @@ def _require_ibkr():
     if not config.IBKR_ENABLED:
         raise HTTPException(
             status_code=503,
-            detail="IBKR not enabled. Set IBKR_ENABLED=true and configure OAuth credentials.",
+            detail="IBKR not enabled. Set IBKR_ENABLED=true and configure credentials in .env.",
         )
-    if not is_authenticated():
+    if not ibkr_client.is_connected():
         raise HTTPException(
-            status_code=401,
-            detail="IBKR not authenticated. Visit /ibkr/auth/login to connect.",
+            status_code=503,
+            detail="IBKR not connected. Check credentials and server logs. Try POST /ibkr/connect.",
         )
     if not config.IBKR_ACCOUNT_ID:
-        raise HTTPException(
-            status_code=503,
-            detail="IBKR_ACCOUNT_ID not set in environment.",
-        )
+        raise HTTPException(status_code=503, detail="IBKR_ACCOUNT_ID not set.")
 
 
 # ---------------------------------------------------------------------------
-# OAuth — one-time setup flow
+# Status + manual reconnect
 # ---------------------------------------------------------------------------
 
-@router.get("/auth/login", summary="Get IBKR OAuth authorization URL")
-def auth_login():
+@router.get("/status", summary="IBKR connection status")
+def get_status():
     """
-    Returns the URL the admin should visit to authenticate with IBKR.
-    The frontend should redirect the user to this URL.
-
-    After the user logs in, IBKR will redirect to /ibkr/auth/callback
-    and all team members will automatically see IBKR data.
-    """
-    if not config.IBKR_CLIENT_ID or not config.IBKR_CLIENT_SECRET:
-        raise HTTPException(
-            status_code=503,
-            detail="IBKR_CLIENT_ID and IBKR_CLIENT_SECRET must be set in environment.",
-        )
-    return {"auth_url": generate_auth_url()}
-
-
-@router.get("/auth/callback", summary="IBKR OAuth callback — stores tokens and redirects to frontend")
-async def auth_callback(code: str, state: str, background_tasks: BackgroundTasks, pool=Depends(get_pool)):
-    """
-    IBKR redirects here after the user logs in.
-    Exchanges the authorization code for tokens, persists them to DB,
-    then redirects the user back to the frontend dashboard.
-    """
-    if not validate_state(state):
-        raise HTTPException(status_code=400, detail="Invalid OAuth state — possible CSRF. Try logging in again.")
-
-    try:
-        token_data = exchange_code_for_token(code)
-    except Exception as exc:
-        logger.error("Token exchange failed: %s", exc)
-        raise HTTPException(status_code=502, detail=f"IBKR token exchange failed: {exc}")
-
-    access_token = token_data.get("access_token")
-    refresh_token = token_data.get("refresh_token")
-    expires_in = token_data.get("expires_in", 3600)
-    token_type = token_data.get("token_type", "Bearer")
-    scope = token_data.get("scope", "")
-
-    if not access_token:
-        raise HTTPException(status_code=502, detail="IBKR did not return an access token.")
-
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
-
-    # Persist to DB (single-row upsert on id=1)
-    await pool.execute(
-        """
-        INSERT INTO ibkr_tokens (id, access_token, refresh_token, token_type, expires_at, account_id, scope, updated_at)
-        VALUES (1, $1, $2, $3, $4, $5, $6, NOW())
-        ON CONFLICT (id) DO UPDATE SET
-            access_token  = EXCLUDED.access_token,
-            refresh_token = EXCLUDED.refresh_token,
-            token_type    = EXCLUDED.token_type,
-            expires_at    = EXCLUDED.expires_at,
-            account_id    = EXCLUDED.account_id,
-            scope         = EXCLUDED.scope,
-            updated_at    = NOW()
-        """,
-        access_token, refresh_token, token_type, expires_at, config.IBKR_ACCOUNT_ID, scope,
-    )
-
-    # Update in-memory token so all requests immediately start using it
-    set_token(access_token, refresh_token, expires_at)
-
-    logger.info("IBKR OAuth complete — tokens stored. Account: %s", config.IBKR_ACCOUNT_ID)
-
-    # Kick off an initial trade sync in the background so recent trades
-    # appear immediately after connecting — no manual sync needed.
-    background_tasks.add_task(_sync_ibkr_trades, pool)
-
-    # Redirect back to the frontend with a success flag
-    return RedirectResponse(url=f"{config.FRONTEND_URL}?ibkr_connected=true")
-
-
-@router.post("/auth/disconnect", summary="Clear stored IBKR tokens")
-async def auth_disconnect(pool=Depends(get_pool)):
-    """Remove IBKR tokens from memory and DB."""
-    await pool.execute("DELETE FROM ibkr_tokens WHERE id = 1")
-    clear_token()
-    return {"disconnected": True}
-
-
-# ---------------------------------------------------------------------------
-# Status
-# ---------------------------------------------------------------------------
-
-@router.get("/status", summary="IBKR connection and auth status")
-async def get_status(pool=Depends(get_pool)):
-    """
-    Returns whether IBKR is connected and authenticated.
-    Safe to call at any time — used by the frontend to show the connect button.
+    Returns whether IBKR is connected and ready.
+    The frontend uses this to show the connection indicator in the sidebar.
     """
     if not config.IBKR_ENABLED:
         return {
             "enabled": False,
-            "authenticated": False,
-            "message": "Set IBKR_ENABLED=true and configure OAuth credentials to activate.",
+            "connected": False,
+            "message": "Set IBKR_ENABLED=true and configure RSA credentials in .env.",
         }
 
-    authenticated = is_authenticated()
-
-    # Check if tokens exist in DB even if they haven't been loaded into memory
-    if not authenticated:
-        row = await pool.fetchrow("SELECT expires_at FROM ibkr_tokens WHERE id = 1")
-        if row and row["expires_at"] and row["expires_at"] > datetime.now(timezone.utc):
-            # Tokens are in DB but not in memory (e.g. service restarted without startup load)
-            authenticated = True
-
+    connected = ibkr_client.is_connected()
     return {
         "enabled": True,
-        "authenticated": authenticated,
+        "connected": connected,
         "account_id": config.IBKR_ACCOUNT_ID or "not set",
-        "login_url": "/ibkr/auth/login" if not authenticated else None,
-        "message": "Connected" if authenticated else "Not connected — visit /ibkr/auth/login",
+        "message": "Connected" if connected else "Not connected — check logs or POST /ibkr/connect",
     }
+
+
+@router.post("/connect", summary="Manually trigger IBKR reconnection")
+def reconnect():
+    """
+    Re-run the RSA auth flow and reconnect to IBKR.
+    Useful after updating credentials or if the session dropped unexpectedly.
+    """
+    if not config.IBKR_ENABLED:
+        raise HTTPException(status_code=503, detail="IBKR_ENABLED is false.")
+
+    ibkr_client.disconnect()
+    success = ibkr_client.connect()
+    if success:
+        return {"connected": True, "message": "Reconnected successfully."}
+    raise HTTPException(
+        status_code=502,
+        detail="Reconnection failed. Check IBKR credentials and IBKR_SERVER_IP in logs.",
+    )
 
 
 # ---------------------------------------------------------------------------
 # Account summary
 # ---------------------------------------------------------------------------
 
-@router.get("/account", summary="Live account NAV and balances from IBKR")
+@router.get("/account", summary="Live account NAV and balances")
 def get_account_summary():
     _require_ibkr()
 
@@ -193,7 +105,7 @@ def get_account_summary():
     if summary is None:
         raise HTTPException(status_code=502, detail="Could not fetch account summary from IBKR.")
 
-    def extract_amount(field: str) -> Optional[float]:
+    def extract(field: str) -> Optional[float]:
         entry = summary.get(field, {})
         if isinstance(entry, dict):
             return entry.get("amount")
@@ -201,12 +113,12 @@ def get_account_summary():
 
     return {
         "account_id": config.IBKR_ACCOUNT_ID,
-        "total_nav": extract_amount("netliquidation"),
-        "cash_balance": extract_amount("totalcashvalue"),
-        "equity_value": extract_amount("equitywithloanvalue"),
-        "gross_position_value": extract_amount("grosspositionvalue"),
-        "buying_power": extract_amount("buyingpower"),
-        "as_of": datetime.utcnow().isoformat() + "Z",
+        "total_nav": extract("netliquidation"),
+        "cash_balance": extract("totalcashvalue"),
+        "equity_value": extract("equitywithloanvalue"),
+        "gross_position_value": extract("grosspositionvalue"),
+        "buying_power": extract("buyingpower"),
+        "as_of": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -214,14 +126,11 @@ def get_account_summary():
 # Live positions
 # ---------------------------------------------------------------------------
 
-@router.get("/positions", summary="Live open positions from IBKR")
+@router.get("/positions", summary="Live open positions")
 def get_live_positions():
     _require_ibkr()
 
     raw = ibkr_client.get_positions(config.IBKR_ACCOUNT_ID)
-    if not raw:
-        return []
-
     positions = []
     for p in raw:
         qty = p.get("position", 0)
@@ -238,18 +147,17 @@ def get_live_positions():
             "realized_pnl": p.get("realizedPnl"),
             "currency": p.get("currency", "USD"),
         })
-
     return positions
 
 
 # ---------------------------------------------------------------------------
-# Trade sync — shared helper + manual endpoint
+# Trade sync
 # ---------------------------------------------------------------------------
 
 async def _sync_ibkr_trades(pool) -> dict:
     """
     Pull recent fills from IBKR and insert new ones into the trades table.
-    Called automatically after OAuth connect and by the hourly cron.
+    Called automatically after connect and by the hourly cron.
     Existing trades (matched by ibkr_order_id) are skipped.
     """
     raw_trades = ibkr_client.get_recent_trades(config.IBKR_ACCOUNT_ID)
@@ -330,12 +238,7 @@ async def _sync_ibkr_trades(pool) -> dict:
     }
 
 
-@router.post("/sync/trades", summary="Pull recent IBKR fills into the trades table (also runs automatically every hour)")
+@router.post("/sync/trades", summary="Pull recent IBKR fills into trades table (also runs automatically every hour)")
 async def sync_recent_trades(pool=Depends(get_pool)):
-    """
-    Fetches recent fills from IBKR and inserts any new ones into the trades table.
-    This runs automatically every hour via the cron container, and immediately after
-    connecting via OAuth. You can also call it manually if needed.
-    """
     _require_ibkr()
     return await _sync_ibkr_trades(pool)

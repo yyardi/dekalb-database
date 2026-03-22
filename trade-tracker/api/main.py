@@ -71,23 +71,22 @@ async def startup():
     logger.info("Trade Tracker API started. Docs at /docs")
 
     if config.IBKR_ENABLED:
-        # Load any previously stored OAuth tokens from DB into memory so the
-        # service is immediately authenticated without requiring a fresh login
-        from datetime import timezone
-        from services.ibkr_client import set_token
-        pool = db.get_pool()
-        row = await pool.fetchrow("SELECT access_token, refresh_token, expires_at FROM ibkr_tokens WHERE id = 1")
-        if row and row["access_token"]:
-            set_token(row["access_token"], row["refresh_token"], row["expires_at"])
-            logger.info("IBKR tokens loaded from DB (account: %s)", config.IBKR_ACCOUNT_ID)
-        else:
-            logger.info("IBKR ENABLED — no tokens stored yet. Visit /ibkr/auth/login to connect.")
+        # Connect to IBKR using RSA key credentials (server-to-server, no user action needed).
+        # Runs in a background thread so the API starts immediately regardless.
+        import threading
+        from services.ibkr_client import ibkr_client
+        t = threading.Thread(target=ibkr_client.connect, daemon=True)
+        t.start()
+        logger.info("IBKR connection starting in background (client_id=%s)", config.IBKR_CLIENT_ID)
     else:
         logger.info("IBKR DISABLED — using yfinance for market data. Set IBKR_ENABLED=true to activate.")
 
 
 @app.on_event("shutdown")
 async def shutdown():
+    if config.IBKR_ENABLED:
+        from services.ibkr_client import ibkr_client
+        ibkr_client.disconnect()
     await db.close_pool()
     logger.info("Trade Tracker API stopped")
 

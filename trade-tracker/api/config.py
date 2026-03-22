@@ -56,7 +56,11 @@ _raw_key = os.getenv("IBKR_PRIVATE_KEY", "").strip()
 if _raw_key and not _raw_key.startswith("-----"):
     # Looks like base64-encoded — decode it to get the PEM string
     try:
-        IBKR_PRIVATE_KEY = _b64.b64decode(_raw_key).decode("utf-8")
+        _decoded = _b64.b64decode(_raw_key).decode("utf-8").strip()
+        # If the decoded result is missing PEM headers, add them
+        if not _decoded.startswith("-----"):
+            _decoded = f"-----BEGIN RSA PRIVATE KEY-----\n{_decoded}\n-----END RSA PRIVATE KEY-----"
+        IBKR_PRIVATE_KEY = _decoded
     except Exception:
         IBKR_PRIVATE_KEY = _raw_key.replace("\\n", "\n")
 else:

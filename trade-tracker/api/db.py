@@ -107,6 +107,12 @@ async def _apply_migrations(conn: asyncpg.Connection) -> None:
         )
     """)
 
+    # fidelity_imports.source: distinguish Fidelity vs IBKR history CSV uploads
+    await conn.execute("""
+        ALTER TABLE fidelity_imports
+        ADD COLUMN IF NOT EXISTS source VARCHAR(20) NOT NULL DEFAULT 'fidelity'
+    """)
+
 
 async def init_pool() -> None:
     """Create the connection pool. Called once at application startup."""

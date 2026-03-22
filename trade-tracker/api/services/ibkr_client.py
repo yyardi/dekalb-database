@@ -1,251 +1,312 @@
 """
-IBKR Web API client using OAuth 2.0.
+IBKR Web API client — RSA-based OAuth 2.0 (JWT Bearer Token flow, RFC 7523).
 
-No local gateway needed — authenticates directly with IBKR's cloud API.
+This is NOT standard browser OAuth. There is no redirect URL or login page.
+Authentication is entirely server-side using RSA keys. The full flow:
 
-Authentication flow (one-time, done by an admin):
-  1. Admin visits /ibkr/auth/login in the Trade Tracker
-  2. Redirected to IBKR's OAuth login page (standard IBKR login + 2FA)
-  3. IBKR redirects back to /ibkr/auth/callback with an auth code
-  4. Backend exchanges code for tokens, stores them in DB
-  5. Entire team sees live IBKR data — no further action needed
+  1. Build a JWT signed with your RSA private key
+  2. POST to token endpoint → get OAuth2 bearer token
+  3. POST to sso-sessions with bearer token + IBKR username + server IP → session cookie
+  4. POST to iserver/auth/ssodh/init → activate trading/data session
+  5. Sleep 3-5s, then GET iserver/accounts (required warm-up call)
+  6. Make API calls using the session cookie
+  7. POST /tickle every 60s to keep session alive
 
-Required environment variables:
-  IBKR_CLIENT_ID       - from IBKR developer portal
-  IBKR_CLIENT_SECRET   - from IBKR developer portal
-  IBKR_REDIRECT_URI    - must match what you registered, e.g.:
-                         https://your-api.railway.app/ibkr/auth/callback
-  IBKR_ACCOUNT_ID      - your IBKR account ID (U1234567)
-  IBKR_ENABLED=true
+This module handles all of that automatically. Call ibkr_client.connect() once
+at startup (done by main.py). After that, just call the data methods.
+Re-authentication is automatic when the session expires.
 
-API reference: https://interactivebrokers.github.io/cpwebapi/
+Required env vars (set in .env):
+  IBKR_CLIENT_ID      - e.g. DekalbCapital-Paper
+  IBKR_CLIENT_KEY_ID  - e.g. main
+  IBKR_CREDENTIAL     - IBKR username (e.g. dekalbcapitalpaper)
+  IBKR_PRIVATE_KEY    - full RSA private key PEM content
+  IBKR_ACCOUNT_ID     - account ID (e.g. DFP321877)
+  IBKR_SERVER_IP      - outbound IP of this server
 """
 from __future__ import annotations
 
 import logging
-import secrets
-from datetime import datetime, timedelta, timezone
+import threading
+import time
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Optional
-from urllib.parse import urlencode
 
+import jwt
 import requests
+
 import config
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# In-memory token store
-# Loaded from DB at startup, updated after OAuth callback or token refresh.
-# ---------------------------------------------------------------------------
-_access_token: Optional[str] = None
-_refresh_token: Optional[str] = None
-_token_expires_at: Optional[datetime] = None
-_oauth_state: Optional[str] = None  # CSRF protection for the OAuth flow
 
-
-def set_token(
-    access_token: str,
-    refresh_token: Optional[str],
-    expires_at: Optional[datetime],
-) -> None:
-    """Update in-memory token. Called at startup and after OAuth callback."""
-    global _access_token, _refresh_token, _token_expires_at
-    _access_token = access_token
-    _refresh_token = refresh_token
-    _token_expires_at = expires_at
-    logger.info("IBKR token updated (expires: %s)", expires_at)
-
-
-def clear_token() -> None:
-    global _access_token, _refresh_token, _token_expires_at
-    _access_token = None
-    _refresh_token = None
-    _token_expires_at = None
-    logger.warning("IBKR token cleared — re-authentication required")
-
-
-def is_authenticated() -> bool:
-    """True if we have a non-expired access token in memory."""
-    if not _access_token:
-        return False
-    if _token_expires_at and datetime.now(timezone.utc) >= _token_expires_at:
-        return False
-    return True
-
-
-# ---------------------------------------------------------------------------
-# OAuth helpers (called by the /ibkr/auth/* router endpoints)
-# ---------------------------------------------------------------------------
-
-def generate_auth_url() -> str:
-    """
-    Build the IBKR OAuth authorization URL. Stores a random state value for
-    CSRF validation when the callback arrives.
-    """
-    global _oauth_state
-    _oauth_state = secrets.token_urlsafe(32)
-    params = {
-        "response_type": "code",
-        "client_id": config.IBKR_CLIENT_ID,
-        "redirect_uri": config.IBKR_REDIRECT_URI,
-        "scope": config.IBKR_OAUTH_SCOPE,
-        "state": _oauth_state,
-    }
-    return f"{config.IBKR_OAUTH_AUTH_URL}?{urlencode(params)}"
-
-
-def validate_state(state: str) -> bool:
-    """Return True if the OAuth state matches what we issued (CSRF check)."""
-    return bool(_oauth_state) and state == _oauth_state
-
-
-def exchange_code_for_token(code: str) -> dict:
-    """Exchange an authorization code for access + refresh tokens."""
-    resp = requests.post(
-        config.IBKR_OAUTH_TOKEN_URL,
-        data={
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": config.IBKR_REDIRECT_URI,
-            "client_id": config.IBKR_CLIENT_ID,
-            "client_secret": config.IBKR_CLIENT_SECRET,
-        },
-        timeout=15,
+def _is_configured() -> bool:
+    return bool(
+        config.IBKR_ENABLED
+        and config.IBKR_CLIENT_ID
+        and config.IBKR_CLIENT_KEY_ID
+        and config.IBKR_CREDENTIAL
+        and config.IBKR_PRIVATE_KEY
+        and config.IBKR_ACCOUNT_ID
     )
-    resp.raise_for_status()
-    return resp.json()
 
 
-def do_token_refresh() -> Optional[dict]:
-    """Use the stored refresh token to get a new access token."""
-    if not _refresh_token:
-        logger.warning("No refresh token — re-authentication required")
-        return None
-    try:
-        resp = requests.post(
-            config.IBKR_OAUTH_TOKEN_URL,
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": _refresh_token,
-                "client_id": config.IBKR_CLIENT_ID,
-                "client_secret": config.IBKR_CLIENT_SECRET,
-            },
-            timeout=15,
-        )
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as exc:
-        logger.error("Token refresh failed: %s", exc)
-        return None
+def _load_private_key():
+    """Load RSA private key from config."""
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+    key_bytes = config.IBKR_PRIVATE_KEY.encode()
+    return load_pem_private_key(key_bytes, password=None)
 
 
-# ---------------------------------------------------------------------------
-# IBKRClient — same interface as before, now pointed at api.ibkr.com
-# ---------------------------------------------------------------------------
+def _build_jwt() -> str:
+    """
+    Build a signed JWT assertion for the OAuth2 token request.
+    Header: alg=RS256, kid=<clientKeyId>
+    Claims: iss/sub=clientId, aud=token URL, standard timing fields
+    """
+    now = int(time.time())
+    payload = {
+        "iss": config.IBKR_CLIENT_ID,
+        "sub": config.IBKR_CLIENT_ID,
+        "aud": config.IBKR_TOKEN_URL,
+        "iat": now,
+        "exp": now + 3600,
+        "jti": str(uuid.uuid4()),
+    }
+    private_key = _load_private_key()
+    return jwt.encode(
+        payload,
+        private_key,
+        algorithm="RS256",
+        headers={"kid": config.IBKR_CLIENT_KEY_ID},
+    )
+
 
 class IBKRClient:
     """
-    Wrapper around the IBKR Web API.
-    Identical endpoints to the old Client Portal Gateway — only the base URL
-    and auth method changed (Bearer token instead of session cookie).
+    Manages the IBKR Web API session lifecycle.
+    Once connected, all data methods use the active session automatically.
     """
 
     def __init__(self) -> None:
-        self.base_url = config.IBKR_BASE_URL.rstrip("/")
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": "dekalb-trade-tracker/1.0"})
+        self._connected = False
+        self._tickle_thread: Optional[threading.Thread] = None
+        self._stop_tickle = threading.Event()
+        self._lock = threading.Lock()
 
-    def _auth_headers(self) -> dict:
-        return {"Authorization": f"Bearer {_access_token}"}
+    # ------------------------------------------------------------------
+    # Connection lifecycle
+    # ------------------------------------------------------------------
+
+    def connect(self) -> bool:
+        """
+        Establish a full IBKR session. Safe to call on startup or after expiry.
+        Returns True if successful, False otherwise.
+        """
+        if not _is_configured():
+            logger.info("IBKR not configured — skipping connection attempt")
+            return False
+
+        with self._lock:
+            try:
+                return self._do_connect()
+            except Exception as exc:
+                logger.error("IBKR connection failed: %s", exc)
+                self._connected = False
+                return False
+
+    def _do_connect(self) -> bool:
+        logger.info("IBKR: starting connection (client_id=%s)", config.IBKR_CLIENT_ID)
+
+        # Step 1: Get OAuth2 bearer token using RSA-signed JWT
+        bearer_token = self._get_bearer_token()
+        if not bearer_token:
+            return False
+
+        # Step 2: Create SSO session
+        if not self._create_sso_session(bearer_token):
+            return False
+
+        # Step 3: Init iserver trading/data session
+        self._init_iserver()
+
+        # Step 4: Wait for session to activate (IBKR requirement)
+        time.sleep(4)
+
+        # Step 5: Warm-up call — required before portfolio/iserver endpoints work
+        self._warmup()
+
+        self._connected = True
+        logger.info("IBKR: connected (account=%s)", config.IBKR_ACCOUNT_ID)
+
+        # Start background tickle to keep session alive
+        self._start_tickle()
+        return True
+
+    def _get_bearer_token(self) -> Optional[str]:
+        """Step 1: exchange RSA-signed JWT for OAuth2 bearer token."""
+        try:
+            assertion = _build_jwt()
+            resp = self._session.post(
+                config.IBKR_TOKEN_URL,
+                data={
+                    "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                    "assertion": assertion,
+                    "scope": "sso-sessions.write",
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            token = resp.json().get("access_token")
+            if token:
+                logger.info("IBKR: OAuth2 bearer token obtained")
+            else:
+                logger.error("IBKR: token response missing access_token: %s", resp.text[:200])
+            return token
+        except Exception as exc:
+            logger.error("IBKR: failed to get bearer token: %s", exc)
+            return None
+
+    def _create_sso_session(self, bearer_token: str) -> bool:
+        """Step 2: create SSO session using bearer token + credential + IP."""
+        try:
+            ip = config.IBKR_SERVER_IP or self._detect_ip()
+            resp = self._session.post(
+                config.IBKR_SSO_URL,
+                headers={"Authorization": f"Bearer {bearer_token}"},
+                json={
+                    "publish": 1,
+                    "compete": 1,
+                    "sub": config.IBKR_CREDENTIAL,
+                    "claims": {"ip": ip},
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            logger.info("IBKR: SSO session created (credential=%s, ip=%s)", config.IBKR_CREDENTIAL, ip)
+            return True
+        except Exception as exc:
+            logger.error("IBKR: SSO session creation failed: %s", exc)
+            return False
+
+    def _init_iserver(self) -> None:
+        """Step 3: activate trading/data session."""
+        try:
+            resp = self._session.post(
+                f"{config.IBKR_BASE_URL}/iserver/auth/ssodh/init",
+                json={"publish": True, "compete": True},
+                timeout=15,
+            )
+            logger.debug("IBKR: iserver init response: %s", resp.status_code)
+        except Exception as exc:
+            logger.warning("IBKR: iserver init warning (may still work): %s", exc)
+
+    def _warmup(self) -> None:
+        """Step 5: GET /iserver/accounts — required before other iserver calls."""
+        try:
+            self._session.get(f"{config.IBKR_BASE_URL}/iserver/accounts", timeout=10)
+        except Exception:
+            pass
+
+    def _detect_ip(self) -> str:
+        """Detect this server's outbound IP as a fallback when IBKR_SERVER_IP is not set."""
+        try:
+            resp = requests.get("https://api.ipify.org", timeout=5)
+            ip = resp.text.strip()
+            logger.warning("IBKR_SERVER_IP not set — auto-detected %s. Set it explicitly for stability.", ip)
+            return ip
+        except Exception:
+            logger.warning("Could not detect outbound IP — using 0.0.0.0 (likely to fail)")
+            return "0.0.0.0"
+
+    def disconnect(self) -> None:
+        """Close the session and stop the tickle thread."""
+        self._stop_tickle.set()
+        try:
+            self._session.post(f"{config.IBKR_BASE_URL}/logout", timeout=10)
+        except Exception:
+            pass
+        self._connected = False
+        logger.info("IBKR: disconnected")
+
+    def is_connected(self) -> bool:
+        return self._connected
+
+    # ------------------------------------------------------------------
+    # Tickle — keeps the session alive
+    # ------------------------------------------------------------------
+
+    def _start_tickle(self) -> None:
+        self._stop_tickle.clear()
+        self._tickle_thread = threading.Thread(target=self._tickle_loop, daemon=True)
+        self._tickle_thread.start()
+
+    def _tickle_loop(self) -> None:
+        """POST /tickle every 60s to prevent session timeout."""
+        while not self._stop_tickle.wait(60):
+            try:
+                resp = self._session.post(f"{config.IBKR_BASE_URL}/tickle", timeout=10)
+                if resp.status_code == 401:
+                    logger.warning("IBKR: tickle 401 — session expired, reconnecting...")
+                    self._connected = False
+                    self._do_connect()
+            except Exception as exc:
+                logger.warning("IBKR: tickle error: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Internal request helper
+    # ------------------------------------------------------------------
 
     def _get(self, path: str, **kwargs) -> Optional[Any]:
-        if not config.IBKR_ENABLED:
+        if not self._connected:
+            logger.warning("IBKR not connected — call connect() first")
             return None
-        if not is_authenticated():
-            logger.warning("IBKR not authenticated — visit /ibkr/auth/login")
-            return None
-
-        url = f"{self.base_url}{path}"
+        url = f"{config.IBKR_BASE_URL}{path}"
         try:
-            resp = self._session.get(url, headers=self._auth_headers(), timeout=10, **kwargs)
-
-            # On 401, attempt a token refresh and retry once
+            resp = self._session.get(url, timeout=10, **kwargs)
             if resp.status_code == 401:
-                token_data = do_token_refresh()
-                if token_data:
-                    expires_in = token_data.get("expires_in", 3600)
-                    set_token(
-                        token_data["access_token"],
-                        token_data.get("refresh_token", _refresh_token),
-                        datetime.now(timezone.utc) + timedelta(seconds=expires_in),
-                    )
-                    resp = self._session.get(url, headers=self._auth_headers(), timeout=10, **kwargs)
+                logger.warning("IBKR: 401 on %s — reconnecting...", path)
+                self._connected = False
+                if self.connect():
+                    resp = self._session.get(url, timeout=10, **kwargs)
                 else:
-                    clear_token()
                     return None
-
             resp.raise_for_status()
             return resp.json()
-
         except requests.exceptions.ConnectionError:
-            logger.error("Cannot reach IBKR Web API at %s", self.base_url)
+            logger.error("IBKR: cannot reach API at %s", url)
             return None
         except requests.exceptions.Timeout:
-            logger.error("IBKR Web API request timed out [%s]", path)
-            return None
-        except requests.exceptions.HTTPError as exc:
-            logger.error("IBKR HTTP error [%s]: %s", path, exc)
+            logger.error("IBKR: request timed out [%s]", path)
             return None
         except Exception as exc:
-            logger.error("IBKR request failed [%s]: %s", path, exc)
-            return None
-
-    def _post(self, path: str, json: Optional[dict] = None) -> Optional[Any]:
-        if not config.IBKR_ENABLED or not is_authenticated():
-            return None
-        url = f"{self.base_url}{path}"
-        try:
-            resp = self._session.post(url, headers=self._auth_headers(), json=json or {}, timeout=10)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as exc:
-            logger.error("IBKR POST failed [%s]: %s", path, exc)
+            logger.error("IBKR: request failed [%s]: %s", path, exc)
             return None
 
     # ------------------------------------------------------------------
-    # Auth
+    # Data methods
     # ------------------------------------------------------------------
-
-    def auth_status(self) -> Optional[dict]:
-        return self._get("/iserver/auth/status")
-
-    def reauthenticate(self) -> Optional[dict]:
-        return self._post("/iserver/reauthenticate")
-
-    # ------------------------------------------------------------------
-    # Accounts
-    # ------------------------------------------------------------------
-
-    def get_accounts(self) -> list[dict]:
-        data = self._get("/portfolio/accounts")
-        if data is None:
-            return []
-        return data if isinstance(data, list) else [data]
 
     def get_account_summary(self, account_id: str) -> Optional[dict]:
-        self.get_accounts()  # required warm-up per IBKR docs
+        # /portfolio endpoints require /portfolio/subaccounts first
+        self._get("/portfolio/subaccounts")
         return self._get(f"/portfolio/{account_id}/summary")
 
     def get_positions(self, account_id: str) -> list[dict]:
-        self.get_accounts()
+        self._get("/portfolio/subaccounts")
         data = self._get(f"/portfolio/{account_id}/positions/0")
         if data is None:
             return []
         return data if isinstance(data, list) else []
 
-    # ------------------------------------------------------------------
-    # Market data
-    # ------------------------------------------------------------------
+    def get_recent_trades(self, account_id: str) -> list[dict]:
+        data = self._get("/iserver/account/trades")
+        if data is None:
+            return []
+        return data if isinstance(data, list) else []
 
     def get_conid(self, symbol: str) -> Optional[int]:
         data = self._get("/trsrv/stocks", params={"symbols": symbol})
@@ -256,7 +317,7 @@ class IBKRClient:
             if contracts:
                 return contracts[0]["contracts"][0]["conid"]
         except (KeyError, IndexError, TypeError):
-            logger.warning("Unexpected conid response for %s: %s", symbol, data)
+            pass
         return None
 
     def get_market_snapshot(self, conid: int) -> Optional[dict]:
@@ -264,22 +325,12 @@ class IBKRClient:
         data = self._get("/iserver/marketdata/snapshot", params=params)
         if not data or not isinstance(data, list):
             return None
+        # IBKR sometimes needs two calls for snapshot data to populate
         if not data[0].get("31"):
             data = self._get("/iserver/marketdata/snapshot", params=params)
             if not data or not isinstance(data, list):
                 return None
         return data[0]
-
-    # ------------------------------------------------------------------
-    # Trade history
-    # ------------------------------------------------------------------
-
-    def get_recent_trades(self, account_id: str) -> list[dict]:
-        self.get_accounts()
-        data = self._get("/iserver/account/trades")
-        if data is None:
-            return []
-        return data if isinstance(data, list) else []
 
 
 # Singleton — imported by routers and services

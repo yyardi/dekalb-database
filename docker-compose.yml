@@ -134,11 +134,14 @@ services:
       - POSTGRES_DB=trade_tracker     # equities team's isolated database
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
-      # IBKR Client Portal Gateway — see README for setup steps.
+      # IBKR Web API (OAuth 2.0) — see README for setup steps.
       # Values come from your .env file. Defaults to disabled (yfinance fallback).
       - IBKR_ENABLED=${IBKR_ENABLED:-false}
-      - IBKR_GATEWAY_URL=https://host.docker.internal:5001
+      - IBKR_CLIENT_ID=${IBKR_CLIENT_ID:-}
+      - IBKR_CLIENT_SECRET=${IBKR_CLIENT_SECRET:-}
       - IBKR_ACCOUNT_ID=${IBKR_ACCOUNT_ID:-}
+      - IBKR_REDIRECT_URI=${IBKR_REDIRECT_URI:-http://localhost:8000/ibkr/auth/callback}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
       # Tune as needed
       - PRICE_CACHE_TTL_SECONDS=60
       - DEBUG=false

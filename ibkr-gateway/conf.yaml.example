@@ -1,4 +1,4 @@
-listenPort: 5000
+listenPort: 5001
 listenSsl: true
 
 # SSL cert bundled with the gateway download — don't change these

@@ -14,9 +14,9 @@ DB_MAX_CONNECTIONS = int(os.getenv("DB_MAX_CONNECTIONS", "10"))
 
 # IBKR Client Portal Gateway (runs locally on your machine)
 # Gateway download: https://www.interactivebrokers.com/en/trading/ib-api.php
-# IBKR_GATEWAY_URL: use https://host.docker.internal:5000 when running in Docker
-#                   use https://localhost:5000 when running the API locally
-IBKR_GATEWAY_URL = os.getenv("IBKR_GATEWAY_URL", "https://localhost:5000")
+# IBKR_GATEWAY_URL: use https://host.docker.internal:5001 when running in Docker
+#                   use https://localhost:5001 when running the API locally
+IBKR_GATEWAY_URL = os.getenv("IBKR_GATEWAY_URL", "https://localhost:5001")
 IBKR_ENABLED = os.getenv("IBKR_ENABLED", "false").lower() == "true"
 IBKR_ACCOUNT_ID = os.getenv("IBKR_ACCOUNT_ID", "")
 

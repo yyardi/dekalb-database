@@ -1,18 +1,26 @@
 """
-IBKR client via Pangolin proxy.
+IBKR Client Portal Gateway client.
 
-Pangolin is a reverse proxy that handles IBKR OAuth signing.
-Your app calls Pangolin with plain HTTPS requests; Pangolin signs them
-and forwards to the IBKR Client Portal Web API.
+The IBKR Client Portal Gateway is a Java app you run locally. It handles
+authentication with IBKR (username/password + 2FA via browser) and exposes a
+local REST API at https://localhost:5000.
 
 To activate:
-  1. Make sure you're connected to the team VPN (Tailscale)
-  2. Set IBKR_ENABLED=true in your environment
-  3. Set IBKR_ACCOUNT_ID=U1234567 (get from your manager)
-  4. Pangolin URL defaults to https://pangolin.dekalb.capital
+  1. Download the Client Portal Gateway from IBKR:
+       https://www.interactivebrokers.com/en/trading/ib-api.php
+       (look for "Client Portal API" -> download the .zip)
+  2. Unzip it into the ibkr-gateway/ folder in this repo
+  3. Copy ibkr-gateway/conf.yaml.example -> ibkr-gateway/conf.yaml
+  4. Start the gateway:
+       cd ibkr-gateway && java -jar clientportal.gw/root/clientportal.gw.jar root/conf
+  5. Open https://localhost:5000 in your browser, log in with your IBKR
+     username + password + 2FA. Do this once per session (~24h).
+  6. Set these env vars (in .env file at repo root):
+       IBKR_ENABLED=true
+       IBKR_ACCOUNT_ID=U1234567   <- your IBKR account ID
+  7. If running in Docker: IBKR_GATEWAY_URL=https://host.docker.internal:5000
 
-The API endpoints mirror IBKR's Client Portal Web API v1:
-  https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/
+API reference: https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/
 """
 from __future__ import annotations
 

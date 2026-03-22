@@ -45,16 +45,16 @@ def _require_ibkr():
 # Status
 # ---------------------------------------------------------------------------
 
-@router.get("/status", summary="Pangolin connection and IBKR auth status")
+@router.get("/status", summary="IBKR gateway connection and auth status")
 def get_status():
     """
-    Check whether Pangolin is reachable and IBKR session is authenticated.
+    Check whether the IBKR Client Portal Gateway is reachable and the session is authenticated.
     Safe to call even when IBKR is disabled — returns enabled=false instead of erroring.
     """
     if not config.IBKR_ENABLED:
         return {
             "enabled": False,
-            "pangolin_url": config.IBKR_PANGOLIN_URL,
+            "gateway_url": config.IBKR_GATEWAY_URL,
             "message": "Set IBKR_ENABLED=true and IBKR_ACCOUNT_ID to activate",
         }
 
@@ -63,8 +63,8 @@ def get_status():
         return {
             "enabled": True,
             "connected": False,
-            "pangolin_url": config.IBKR_PANGOLIN_URL,
-            "message": "Could not reach Pangolin — check VPN (Tailscale) connection",
+            "gateway_url": config.IBKR_GATEWAY_URL,
+            "message": "Could not reach the IBKR gateway — is it running and authenticated?",
         }
 
     return {
@@ -72,7 +72,7 @@ def get_status():
         "connected": True,
         "authenticated": auth.get("authenticated", False),
         "competing": auth.get("competing", False),
-        "pangolin_url": config.IBKR_PANGOLIN_URL,
+        "gateway_url": config.IBKR_GATEWAY_URL,
         "account_id": config.IBKR_ACCOUNT_ID or "not set",
         "raw": auth,
     }
@@ -85,7 +85,7 @@ def get_status():
 @router.get("/account", summary="Live account NAV and balances from IBKR")
 def get_account_summary():
     """
-    Fetches live NAV, cash balance, and equity value directly from IBKR via Pangolin.
+    Fetches live NAV, cash balance, and equity value directly from IBKR via the gateway.
     Much more accurate than the derived values from trade history alone.
     """
     _require_ibkr()

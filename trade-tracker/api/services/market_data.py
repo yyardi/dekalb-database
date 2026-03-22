@@ -1,13 +1,9 @@
 """
 Market data service.
 
-Current implementation: yfinance (free, no auth required).
-IBKR path is wired in but gated behind IBKR_GATEWAY_ENABLED=true.
-
-When IBKR gateway is ready:
-1. Set IBKR_GATEWAY_ENABLED=true in env
-2. Set IBKR_GATEWAY_URL to your gateway address (default https://localhost:5000)
-3. The gateway must be running and authenticated via 2FA
+Primary source: yfinance (free, no auth required, always available).
+IBKR path: when IBKR_ENABLED=true and authenticated via Web API OAuth,
+live prices are fetched from IBKR first with yfinance as fallback.
 """
 from __future__ import annotations
 
@@ -134,7 +130,7 @@ def get_historical_bars(
 # ---------------------------------------------------------------------------
 
 def _fetch_quote_ibkr(symbol: str) -> Optional[PriceQuote]:
-    """Fetch a live price quote from IBKR via Pangolin."""
+    """Fetch a live price quote from IBKR Web API."""
     from services.ibkr_client import ibkr_client
 
     conid = ibkr_client.get_conid(symbol)

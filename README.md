@@ -90,6 +90,7 @@ open http://localhost:8080
 | QuestDB | 9000 | Time-series DB (quant team only) |
 | Adminer | 8080 | DB GUI |
 | Ingestion Service | 5555 | ZMQ listener (quant team) |
+| IBKR Gateway | 5001 | Client Portal Gateway (runs on host, not in Docker) |
 
 ---
 
@@ -120,7 +121,7 @@ The API works without IBKR — it falls back to **yfinance** for market prices. 
 
 ### How it works
 
-The **IBKR Client Portal Gateway** is a small Java app you run on your machine. You log into it once via browser (username + password + 2FA), and it keeps a session alive. The API talks to it at `https://localhost:5000`.
+The **IBKR Client Portal Gateway** is a small Java app you run on your machine. You log into it once via browser (username + password + 2FA), and it keeps a session alive. The API talks to it at `https://localhost:5001`.
 
 ### Step-by-step
 
@@ -143,20 +144,20 @@ ibkr-gateway/
 cp ibkr-gateway/conf.yaml.example ibkr-gateway/conf.yaml
 ```
 
-Default settings work as-is (listens on port 5000).
+Default settings work as-is (listens on port 5001).
 
 **3. Start the gateway**
 
 ```bash
-cd ibkr-gateway
-java -jar clientportal.gw/root/clientportal.gw.jar root/conf
+cd ibkr-gateway/clientportal.gw
+bin/run.sh root/conf.yaml
 ```
 
 Leave this terminal open.
 
 **4. Authenticate in your browser**
 
-Open `https://localhost:5000`. Your browser will warn about the self-signed cert — click through it. Log in with your IBKR username/password and complete 2FA.
+Open `https://localhost:5001`. Your browser will warn about the self-signed cert — click through it. Log in with your IBKR username/password and complete 2FA.
 
 You'll see a confirmation page when it works. The session lasts ~24 hours. Repeat this step after it expires.
 
@@ -182,7 +183,7 @@ curl http://localhost:8000/ibkr/status
 # {"enabled": true, "connected": true, "authenticated": true, ...}
 ```
 
-> **Docker note:** The gateway runs on your host machine. Docker reaches it via `host.docker.internal:5000`, which is already configured in `docker-compose.yml`. No extra steps needed.
+> **Docker note:** The gateway runs on your host machine. Docker reaches it via `host.docker.internal:5001`, which is already configured in `docker-compose.yml`. No extra steps needed.
 
 ---
 

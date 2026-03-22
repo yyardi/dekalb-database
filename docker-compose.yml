@@ -137,7 +137,7 @@ services:
       # IBKR Client Portal Gateway — see README for setup steps.
       # Values come from your .env file. Defaults to disabled (yfinance fallback).
       - IBKR_ENABLED=${IBKR_ENABLED:-false}
-      - IBKR_GATEWAY_URL=https://host.docker.internal:5000
+      - IBKR_GATEWAY_URL=https://host.docker.internal:5001
       - IBKR_ACCOUNT_ID=${IBKR_ACCOUNT_ID:-}
       # Tune as needed
       - PRICE_CACHE_TTL_SECONDS=60

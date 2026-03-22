@@ -5,3 +5,11 @@ postgres-data/
 questdb-data/
 .env
 .DS_Store
+# IBKR keys — never commit private keys or filled-in gateway config
+*.pem
+*.key
+*.p12
+*.jks
+ibkr-gateway/conf.yaml
+ibkr-gateway/clientportal.gw/
+ibkr-gateway/conf.yaml

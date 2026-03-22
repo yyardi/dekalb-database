@@ -1,32 +1,154 @@
 services:
+  # ---------------------------------------------------------------
+  # PostgreSQL - one container, TWO isolated databases:
+  #
+  #   "trading"       → quant team (ingestion-service)
+  #                     tables: orders, positions, accounts, strategies, ib_api_calls
+  #
+  #   "trade_tracker" → equities team (trade-tracker API)
+  #                     tables: trades, portfolio_snapshots, fidelity_imports, cash_flows
+  #
+  # Init order (alphabetical in docker-entrypoint-initdb.d):
+  #   01_trading.sql  → quant schema applied to "trading" DB automatically
+  #   02_equities.sh  → creates "trade_tracker" DB + applies equities schema
+  #
+  # NOTE: questdb_schema.sql is intentionally NOT mounted here — it uses
+  # QuestDB-specific syntax (SYMBOL, PARTITION BY DAY WAL) that is invalid
+  # PostgreSQL. QuestDB tables are created manually via the QuestDB web console
+  # at http://localhost:9000.
+  # ---------------------------------------------------------------
   postgres:
     image: postgres:16
     environment:
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: trading
+      POSTGRES_DB: trading            # default DB = quant team
+      POSTGRES_USER: postgres
     ports:
       - "5432:5432"
     volumes:
       - ./postgres-data:/var/lib/postgresql/data
+      # Quant team schema → runs automatically against "trading" DB
+      - ./schemas/postgresql_schema.sql:/docker-entrypoint-initdb.d/01_trading.sql
+      # Equities team init script → creates trade_tracker DB + runs equities schema
+      - ./schemas/docker-init/02_equities.sh:/docker-entrypoint-initdb.d/02_equities.sh
+      # Schema file referenced by the init script (not in initdb.d to avoid auto-run)
+      - ./schemas/trade_tracker_schema.sql:/etc/schemas/trade_tracker_schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
+  # ---------------------------------------------------------------
+  # QuestDB - time-series database (quant team only)
+  # Console:  http://localhost:9000
+  # ILP port: 9009  (ingestion-service writes here)
+  #
+  # To create tables: open http://localhost:9000 and run questdb_schema.sql
+  # ---------------------------------------------------------------
   questdb:
     image: questdb/questdb
     ports:
-      - "9000:9000"
-      - "8812:8812"
-      - "9009:9009"
+      - "9000:9000"   # HTTP console
+      - "8812:8812"   # PostgreSQL wire protocol
+      - "9009:9009"   # ILP ingestion (ingestion-service uses this)
     volumes:
       - ./questdb-data:/var/lib/questdb
 
-  adminer:              
-    image: adminer      
-    ports:              
-      - "8080:8080"     
+  # ---------------------------------------------------------------
+  # Adminer - lightweight DB GUI for both databases
+  # http://localhost:8080
+  #   Quant team:    System=PostgreSQL, Server=postgres, Database=trading
+  #   Equities team: System=PostgreSQL, Server=postgres, Database=trade_tracker
+  # ---------------------------------------------------------------
+  adminer:
+    image: adminer
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
+  # ---------------------------------------------------------------
+  # Ingestion Service - quant team ZMQ → PostgreSQL/QuestDB pipeline
+  # Connects to: trading DB (PostgreSQL) + QuestDB
+  # ---------------------------------------------------------------
   ingestion-service:
     build: ./ingestion-service
     ports:
       - "5555:5555"
     environment:
       - DB_HOST=postgres
+      - POSTGRES_DB=trading
       - QUESTDB_ILP_HOST=questdb
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------
+  # Trade Tracker Frontend - React dashboard (equities team)
+  # http://localhost:3000
+  #
+  # Built with Vite + React + Recharts + Tailwind.
+  # nginx serves the static build and proxies /api/* → trade-tracker:8000
+  # ---------------------------------------------------------------
+  trade-tracker-frontend:
+    build: ./trade-tracker/frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - trade-tracker
+
+  # ---------------------------------------------------------------
+  # Snapshot cron - runs POST /portfolio/snapshots/generate every hour
+  # Keeps the performance chart and metrics up to date automatically.
+  # Waits 60s on startup to give trade-tracker time to be ready.
+  # ---------------------------------------------------------------
+  snapshot-cron:
+    image: alpine/curl
+    depends_on:
+      - trade-tracker
+    restart: unless-stopped
+    entrypoint: >
+      sh -c "echo 'Snapshot cron starting, waiting 60s for API...' &&
+             sleep 60 &&
+             while true; do
+               echo \"[snapshot-cron] $$(date) — generating snapshot...\";
+               curl -s -X POST http://trade-tracker:8000/portfolio/snapshots/generate | head -c 200;
+               echo '';
+               sleep 3600;
+             done"
+
+  # ---------------------------------------------------------------
+  # Trade Tracker API - equities team FastAPI backend
+  # Connects to: trade_tracker DB (PostgreSQL only, no QuestDB)
+  # Swagger docs: http://localhost:8000/docs
+  # Health check: http://localhost:8000/health
+  # ---------------------------------------------------------------
+  trade-tracker:
+    build: ./trade-tracker/api
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_HOST=postgres
+      - POSTGRES_DB=trade_tracker     # equities team's isolated database
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      # IBKR Client Portal Gateway — see README for setup steps.
+      # Values come from your .env file. Defaults to disabled (yfinance fallback).
+      - IBKR_ENABLED=${IBKR_ENABLED:-false}
+      - IBKR_GATEWAY_URL=https://host.docker.internal:5000
+      - IBKR_ACCOUNT_ID=${IBKR_ACCOUNT_ID:-}
+      # Tune as needed
+      - PRICE_CACHE_TTL_SECONDS=60
+      - DEBUG=false
+    volumes:
+      - ./schemas/trade_tracker_schema.sql:/etc/schemas/trade_tracker_schema.sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

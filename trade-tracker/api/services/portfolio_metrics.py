@@ -1,0 +1,397 @@
+"""
+Portfolio metrics calculations.
+
+Provides:
+- NAV-based return series from portfolio_snapshots
+- Beta (portfolio vs SPY) for rolling 12-month and YTD periods
+- Annualized standard deviation
+- Sharpe ratio (risk-free rate = 0 for simplicity; can be updated)
+- Alpha, max drawdown, win rate
+"""
+from __future__ import annotations
+
+import logging
+import math
+from datetime import date, datetime, timedelta
+from decimal import Decimal
+from typing import Optional
+
+import asyncpg
+
+from models.schemas import PerformancePoint, PortfolioMetrics
+from services.market_data import get_spy_history
+
+logger = logging.getLogger(__name__)
+
+RISK_FREE_RATE_ANNUAL = 0.0   # update to e.g. 0.05 for 5% T-bill rate
+
+
+# ---------------------------------------------------------------------------
+# Helper math
+# ---------------------------------------------------------------------------
+
+def _mean(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def _variance(values: list[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    m = _mean(values)
+    return sum((v - m) ** 2 for v in values) / (len(values) - 1)
+
+
+def _std_dev(values: list[float]) -> float:
+    return math.sqrt(_variance(values))
+
+
+def _covariance(x: list[float], y: list[float]) -> float:
+    if len(x) != len(y) or len(x) < 2:
+        return 0.0
+    mx, my = _mean(x), _mean(y)
+    return sum((xi - mx) * (yi - my) for xi, yi in zip(x, y)) / (len(x) - 1)
+
+
+def _beta(portfolio_returns: list[float], benchmark_returns: list[float]) -> Optional[float]:
+    var_bm = _variance(benchmark_returns)
+    if var_bm == 0:
+        return None
+    cov = _covariance(portfolio_returns, benchmark_returns)
+    return cov / var_bm
+
+
+def _max_drawdown(nav_series: list[float]) -> float:
+    """Maximum peak-to-trough drawdown as a negative percentage."""
+    if len(nav_series) < 2:
+        return 0.0
+    peak = nav_series[0]
+    max_dd = 0.0
+    for nav in nav_series:
+        if nav > peak:
+            peak = nav
+        if peak == 0:
+            continue  # skip — nav=0 means no real data (yfinance failed that day)
+        dd = (nav - peak) / peak
+        if dd < max_dd:
+            max_dd = dd
+    return max_dd * 100  # as percentage
+
+
+# ---------------------------------------------------------------------------
+# Data fetching from DB
+# ---------------------------------------------------------------------------
+
+async def _fetch_snapshots(
+    pool: asyncpg.Pool,
+    start: date,
+    end: date,
+    account_id: Optional[str] = None,
+) -> list[asyncpg.Record]:
+    """
+    Fetch portfolio snapshots in date range.
+    If account_id is None, returns combined totals (account_id IS NULL rows).
+    """
+    if account_id:
+        rows = await pool.fetch(
+            """
+            SELECT snapshot_date, total_nav, daily_pnl_pct, spy_daily_pct, spy_close
+            FROM portfolio_snapshots
+            WHERE account_id = $1
+              AND snapshot_date BETWEEN $2 AND $3
+            ORDER BY snapshot_date ASC
+            """,
+            account_id, start, end,
+        )
+    else:
+        rows = await pool.fetch(
+            """
+            SELECT snapshot_date, total_nav, daily_pnl_pct, spy_daily_pct, spy_close
+            FROM portfolio_snapshots
+            WHERE account_id IS NULL
+              AND snapshot_date BETWEEN $1 AND $2
+            ORDER BY snapshot_date ASC
+            """,
+            start, end,
+        )
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Snapshot upsert (called by nightly job or on-demand)
+# ---------------------------------------------------------------------------
+
+async def upsert_snapshot(
+    pool: asyncpg.Pool,
+    snapshot_date: date,
+    total_nav: Decimal,
+    account_id: Optional[str],
+    cash_balance: Optional[Decimal] = None,
+    equity_value: Optional[Decimal] = None,
+    prev_nav: Optional[Decimal] = None,
+) -> None:
+    """
+    Upsert a portfolio NAV snapshot.
+    Also fetches SPY close for the date and stores it for overlay calculations.
+    """
+    from services.market_data import get_historical_bars
+
+    # Get SPY data for this date
+    spy_bars = get_historical_bars("SPY", snapshot_date, snapshot_date)
+    spy_close = Decimal(str(spy_bars[0].close)) if spy_bars else None
+
+    daily_pnl: Optional[Decimal] = None
+    daily_pnl_pct: Optional[Decimal] = None
+    if prev_nav and prev_nav > 0:
+        daily_pnl = total_nav - prev_nav
+        daily_pnl_pct = (daily_pnl / prev_nav * 100).quantize(Decimal("0.000001"))
+
+    # Fetch previous SPY close to calculate daily pct
+    spy_daily_pct: Optional[Decimal] = None
+    if spy_close:
+        prev_spy_bars = get_historical_bars(
+            "SPY",
+            snapshot_date - timedelta(days=5),  # look back enough to find last trading day
+            snapshot_date - timedelta(days=1),
+        )
+        if prev_spy_bars:
+            prev_spy_close = prev_spy_bars[-1].close
+            if prev_spy_close > 0:
+                spy_daily_pct = (
+                    (spy_close - prev_spy_close) / prev_spy_close * 100
+                ).quantize(Decimal("0.000001"))
+
+    # ON CONFLICT must reference different partial indexes depending on whether
+    # account_id is NULL (combined portfolio) or NOT NULL (per-account).
+    # A plain UNIQUE(date, account_id) silently fails for NULLs in PostgreSQL
+    # because NULL != NULL in standard equality — so we use partial indexes.
+    if account_id is None:
+        conflict_clause = "ON CONFLICT (snapshot_date) WHERE account_id IS NULL"
+    else:
+        conflict_clause = "ON CONFLICT (snapshot_date, account_id) WHERE account_id IS NOT NULL"
+
+    await pool.execute(
+        f"""
+        INSERT INTO portfolio_snapshots
+            (snapshot_date, account_id, total_nav, cash_balance, equity_value,
+             daily_pnl, daily_pnl_pct, spy_close, spy_daily_pct)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        {conflict_clause}
+        DO UPDATE SET
+            total_nav     = EXCLUDED.total_nav,
+            cash_balance  = EXCLUDED.cash_balance,
+            equity_value  = EXCLUDED.equity_value,
+            daily_pnl     = EXCLUDED.daily_pnl,
+            daily_pnl_pct = EXCLUDED.daily_pnl_pct,
+            spy_close     = EXCLUDED.spy_close,
+            spy_daily_pct = EXCLUDED.spy_daily_pct
+        """,
+        snapshot_date, account_id, total_nav, cash_balance, equity_value,
+        daily_pnl, daily_pnl_pct, spy_close, spy_daily_pct,
+    )
+    logger.info("Upserted snapshot %s account=%s nav=%s", snapshot_date, account_id, total_nav)
+
+
+# ---------------------------------------------------------------------------
+# Performance series (for graph)
+# ---------------------------------------------------------------------------
+
+async def get_performance_series(
+    pool: asyncpg.Pool,
+    start: date,
+    end: date,
+    account_id: Optional[str] = None,
+) -> list[PerformancePoint]:
+    rows = await _fetch_snapshots(pool, start, end, account_id)
+    if not rows:
+        return []
+
+    # Build cumulative returns from first day
+    base_nav = float(rows[0]["total_nav"])
+    points: list[PerformancePoint] = []
+    spy_base: Optional[float] = None
+
+    for i, row in enumerate(rows):
+        nav = float(row["total_nav"])
+        port_cum = ((nav - base_nav) / base_nav * 100) if base_nav else None
+
+        spy_daily = float(row["spy_daily_pct"]) if row["spy_daily_pct"] else None
+
+        # Accumulate SPY cumulative return
+        if i == 0:
+            spy_cum = 0.0
+            spy_base = float(row["spy_close"]) if row["spy_close"] else None
+        elif spy_base and row["spy_close"]:
+            spy_cum = (float(row["spy_close"]) - spy_base) / spy_base * 100
+        else:
+            spy_cum = None
+
+        points.append(
+            PerformancePoint(
+                date=row["snapshot_date"],
+                portfolio_nav=Decimal(str(round(nav, 2))),
+                portfolio_pct_change=(
+                    Decimal(str(round(float(row["daily_pnl_pct"]), 6)))
+                    if row["daily_pnl_pct"] else None
+                ),
+                spy_pct_change=Decimal(str(round(spy_daily, 6))) if spy_daily is not None else None,
+                spy_cumulative_pct=Decimal(str(round(spy_cum, 4))) if spy_cum is not None else None,
+                portfolio_cumulative_pct=Decimal(str(round(port_cum, 4))) if port_cum is not None else None,
+            )
+        )
+    return points
+
+
+# ---------------------------------------------------------------------------
+# Metrics calculation
+# ---------------------------------------------------------------------------
+
+def _period_bounds(period: str) -> tuple[date, date]:
+    today = date.today()
+    if period == "ytd":
+        start = date(today.year, 1, 1)
+    elif period == "1y":
+        start = today - timedelta(days=365)
+    elif period == "6m":
+        start = today - timedelta(days=182)
+    elif period == "3m":
+        start = today - timedelta(days=91)
+    elif period == "1m":
+        start = today - timedelta(days=30)
+    else:
+        start = date(today.year, 1, 1)  # default ytd
+    return start, today
+
+
+async def calculate_metrics(
+    pool: asyncpg.Pool,
+    period: str = "ytd",
+    account_id: Optional[str] = None,
+) -> PortfolioMetrics:
+    start, end = _period_bounds(period)
+    rows = await _fetch_snapshots(pool, start, end, account_id)
+
+    if len(rows) < 2:
+        return PortfolioMetrics(
+            period=period,
+            beta=None,
+            std_dev_annualized=None,
+            sharpe_ratio=None,
+            total_return_pct=None,
+            spy_return_pct=None,
+            alpha=None,
+            max_drawdown_pct=None,
+            win_rate=None,
+            as_of=datetime.utcnow(),
+        )
+
+    port_daily_returns = [
+        float(r["daily_pnl_pct"]) / 100 for r in rows if r["daily_pnl_pct"] is not None
+    ]
+    spy_daily_returns = [
+        float(r["spy_daily_pct"]) / 100 for r in rows if r["spy_daily_pct"] is not None
+    ]
+
+    nav_series = [float(r["total_nav"]) for r in rows]
+
+    # Align lengths (in case some days missing spy data)
+    min_len = min(len(port_daily_returns), len(spy_daily_returns))
+    port_r = port_daily_returns[:min_len]
+    spy_r = spy_daily_returns[:min_len]
+
+    # Beta
+    beta_val = _beta(port_r, spy_r)
+
+    # Annualized std dev (assuming 252 trading days)
+    std_dev_daily = _std_dev(port_daily_returns)
+    std_dev_annual = std_dev_daily * math.sqrt(252) * 100 if std_dev_daily else None
+
+    # Total return
+    first_nav = float(rows[0]["total_nav"])
+    last_nav = float(rows[-1]["total_nav"])
+    total_return = (last_nav - first_nav) / first_nav * 100 if first_nav > 0 else None
+
+    # SPY total return
+    first_spy = float(rows[0]["spy_close"]) if rows[0]["spy_close"] else None
+    last_spy = float(rows[-1]["spy_close"]) if rows[-1]["spy_close"] else None
+    spy_return = (last_spy - first_spy) / first_spy * 100 if (first_spy and last_spy) else None
+
+    # Alpha = portfolio return - beta * spy return
+    alpha = None
+    if total_return is not None and beta_val is not None and spy_return is not None:
+        alpha = total_return - beta_val * spy_return
+
+    # Sharpe (annualized, risk-free = 0)
+    sharpe = None
+    if std_dev_annual and std_dev_annual != 0 and total_return is not None:
+        trading_days = len(port_daily_returns)
+        annual_factor = 252 / trading_days if trading_days else 1
+        annualized_return = total_return * annual_factor
+        sharpe = (annualized_return - RISK_FREE_RATE_ANNUAL * 100) / std_dev_annual
+
+    # Max drawdown
+    max_dd = _max_drawdown(nav_series)
+
+    # Win rate: % of profitable trades in the period
+    win_rate_val = await _calculate_win_rate(pool, start, end, account_id)
+
+    def _dec(v: Optional[float], places: int = 4) -> Optional[Decimal]:
+        if v is None:
+            return None
+        return Decimal(str(round(v, places)))
+
+    return PortfolioMetrics(
+        period=period,
+        beta=_dec(beta_val),
+        std_dev_annualized=_dec(std_dev_annual),
+        sharpe_ratio=_dec(sharpe),
+        total_return_pct=_dec(total_return),
+        spy_return_pct=_dec(spy_return),
+        alpha=_dec(alpha),
+        max_drawdown_pct=_dec(max_dd),
+        win_rate=_dec(win_rate_val),
+        as_of=datetime.utcnow(),
+    )
+
+
+async def _calculate_win_rate(
+    pool: asyncpg.Pool,
+    start: date,
+    end: date,
+    account_id: Optional[str],
+) -> Optional[float]:
+    """
+    Win rate: number of SELL trades with net_amount > 0 (profitable closes)
+    divided by total SELL trades in period.
+    This is a simplified proxy - proper P&L requires matching buys to sells (FIFO/LIFO).
+    """
+    try:
+        if account_id:
+            row = await pool.fetchrow(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE net_amount > 0) AS wins,
+                    COUNT(*) AS total
+                FROM trades
+                WHERE side = 'SELL'
+                  AND account_id = $1
+                  AND trade_date BETWEEN $2 AND $3
+                """,
+                account_id, start, end,
+            )
+        else:
+            row = await pool.fetchrow(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE net_amount > 0) AS wins,
+                    COUNT(*) AS total
+                FROM trades
+                WHERE side = 'SELL'
+                  AND trade_date BETWEEN $1 AND $2
+                """,
+                start, end,
+            )
+        if row and row["total"] > 0:
+            return float(row["wins"]) / float(row["total"]) * 100
+    except Exception as exc:
+        logger.error("Win rate calculation failed: %s", exc)
+    return None

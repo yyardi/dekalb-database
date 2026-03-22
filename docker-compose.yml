@@ -140,8 +140,8 @@ services:
       # 3. Run the gateway: cd ibkr-gateway && java -jar ibkr-cp-web-api.jar root/conf
       # 4. Fill in IBKR_ACCOUNT_ID below, then flip IBKR_ENABLED to true
       - IBKR_ENABLED=false
-      - IBKR_GATEWAY_URL=https://host.docker.internal:5000   # gateway on your Mac/PC
-      - IBKR_ACCOUNT_ID=U16303670
+      - IBKR_GATEWAY_URL=https://host.docker.internal:5000
+      - IBKR_ACCOUNT_ID=${IBKR_ACCOUNT_ID}
       # Tune as needed
       - PRICE_CACHE_TTL_SECONDS=60
       - DEBUG=false

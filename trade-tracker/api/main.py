@@ -40,9 +40,18 @@ app = FastAPI(
 
 # Allow the frontend (React dev server on :3000 and production on :80)
 # NOTE: allow_credentials=True requires explicit origins (not "*")
+_allowed_origins = [
+    "http://localhost:3000",
+    "http://localhost:80",
+    "http://localhost",
+]
+# Add production frontend URL if configured (e.g. https://dekalb-tracker.vercel.app)
+if config.FRONTEND_URL and config.FRONTEND_URL not in _allowed_origins:
+    _allowed_origins.append(config.FRONTEND_URL)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:80", "http://localhost"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -60,14 +69,24 @@ app.include_router(ibkr.router)
 async def startup():
     await db.init_pool()
     logger.info("Trade Tracker API started. Docs at /docs")
+
     if config.IBKR_ENABLED:
-        logger.info("IBKR ENABLED — gateway at %s (account: %s)", config.IBKR_GATEWAY_URL, config.IBKR_ACCOUNT_ID)
+        # Connect to IBKR using RSA key credentials (server-to-server, no user action needed).
+        # Runs in a background thread so the API starts immediately regardless.
+        import threading
+        from services.ibkr_client import ibkr_client
+        t = threading.Thread(target=ibkr_client.connect, daemon=True)
+        t.start()
+        logger.info("IBKR connection starting in background (client_id=%s)", config.IBKR_CLIENT_ID)
     else:
         logger.info("IBKR DISABLED — using yfinance for market data. Set IBKR_ENABLED=true to activate.")
 
 
 @app.on_event("shutdown")
 async def shutdown():
+    if config.IBKR_ENABLED:
+        from services.ibkr_client import ibkr_client
+        ibkr_client.disconnect()
     await db.close_pool()
     logger.info("Trade Tracker API stopped")
 
@@ -85,6 +104,6 @@ async def health():
     return {
         "status": "ok" if db_ok else "degraded",
         "database": "connected" if db_ok else "unreachable",
-        "ibkr": "enabled" if config.IBKR_ENABLED else "disabled (yfinance fallback)",
+        "ibkr": "enabled (Web API)" if config.IBKR_ENABLED else "disabled (yfinance fallback)",
         "version": "0.1.0",
     }

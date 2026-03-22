@@ -1,4 +1,6 @@
+import { useEffect, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
+import { get } from '../api/client'
 
 const NAV = [
   { to: '/', label: 'Dashboard', end: true },
@@ -6,7 +8,18 @@ const NAV = [
   { to: '/import', label: 'Import CSV', end: false },
 ]
 
+interface IBKRStatus {
+  enabled: boolean
+  connected: boolean
+}
+
 export default function Layout() {
+  const [ibkrStatus, setIbkrStatus] = useState<IBKRStatus | null>(null)
+
+  useEffect(() => {
+    get<IBKRStatus>('/ibkr/status').then(setIbkrStatus).catch(() => null)
+  }, [])
+
   return (
     <div className="flex min-h-screen bg-gray-950 text-gray-100">
       {/* Sidebar */}
@@ -35,9 +48,19 @@ export default function Layout() {
           ))}
         </nav>
 
+        {/* IBKR connection status — automatic, no user action needed */}
+        {ibkrStatus?.enabled && (
+          <div className="mt-6 px-3">
+            <div className={`flex items-center gap-1.5 text-xs ${ibkrStatus.connected ? 'text-green-400' : 'text-yellow-500'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full inline-block ${ibkrStatus.connected ? 'bg-green-400' : 'bg-yellow-500'}`} />
+              {ibkrStatus.connected ? 'IBKR Connected' : 'IBKR Connecting...'}
+            </div>
+          </div>
+        )}
+
         <div className="mt-auto px-3">
           <a
-            href="http://localhost:8000/docs"
+            href="/docs"
             target="_blank"
             rel="noreferrer"
             className="text-xs text-gray-600 hover:text-gray-400 transition-colors"

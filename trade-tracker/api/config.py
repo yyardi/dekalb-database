@@ -78,7 +78,7 @@ IBKR_BASE_URL        = "https://api.ibkr.com/v1/api"
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
 # yfinance / market data cache
-PRICE_CACHE_TTL_SECONDS = int(os.getenv("PRICE_CACHE_TTL_SECONDS", "60"))
+PRICE_CACHE_TTL_SECONDS = int(os.getenv("PRICE_CACHE_TTL_SECONDS", "300"))
 
 # SPY symbol for benchmark overlay
 BENCHMARK_SYMBOL = os.getenv("BENCHMARK_SYMBOL", "SPY")

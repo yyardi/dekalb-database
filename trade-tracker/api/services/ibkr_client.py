@@ -356,12 +356,14 @@ class IBKRClient:
         return None
 
     def get_market_snapshot(self, conid: int) -> Optional[dict]:
-        params = {"conids": conid, "fields": "31,84,86"}
+        # Fields: 31=last, 84=bid, 86=ask, 82=change$, 83=change%, 7296=prev_close
+        params = {"conids": conid, "fields": "31,84,86,82,83,7296"}
         data = self._get("/iserver/marketdata/snapshot", params=params)
         if not data or not isinstance(data, list):
             return None
-        # IBKR sometimes needs two calls for snapshot data to populate
+        # First call subscribes to the feed — wait 1s then fetch actual data
         if not data[0].get("31"):
+            time.sleep(1)
             data = self._get("/iserver/marketdata/snapshot", params=params)
             if not data or not isinstance(data, list):
                 return None

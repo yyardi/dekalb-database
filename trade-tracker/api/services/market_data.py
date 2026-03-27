@@ -154,12 +154,22 @@ def _fetch_quote_ibkr(symbol: str) -> Optional[PriceQuote]:
     except Exception:
         return None
 
+    def _dec(val) -> Optional[Decimal]:
+        try:
+            return Decimal(str(val)) if val is not None else None
+        except Exception:
+            return None
+
+    prev_close = _dec(snap.get("7296"))
+    change = _dec(snap.get("82"))
+    change_pct = _dec(snap.get("83"))
+
     quote = PriceQuote(
         symbol=symbol,
         price=price,
-        change=None,       # snapshot doesn't include change; would need prev close
-        change_pct=None,
-        previous_close=None,
+        change=change,
+        change_pct=change_pct,
+        previous_close=prev_close,
         source="ibkr",
         as_of=datetime.utcnow(),
     )

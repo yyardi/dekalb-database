@@ -25,11 +25,12 @@ DB_MAX_CONNECTIONS = int(os.getenv("DB_MAX_CONNECTIONS", "10"))
 #   IBKR_CREDENTIAL     = dekalbcapitalpaper   (the IBKR paper username)
 #   IBKR_ACCOUNT_ID     = DFP321877
 #
-# Live account:
-#   IBKR_CLIENT_ID      = (from ticket #619394 — in Ryan's zip)
-#   IBKR_CLIENT_KEY_ID  = (from ticket #619394 — in Ryan's zip)
-#   IBKR_CREDENTIAL     = (IBKR live username)
-#   IBKR_ACCOUNT_ID     = U16303670 or U21601580
+# Live / Production account (F account):
+#   IBKR_CLIENT_ID      = DekalbCapital-Prod
+#   IBKR_CLIENT_KEY_ID  = main
+#   IBKR_CREDENTIAL     = dekalbcapital3
+#   IBKR_ACCOUNT_ID     = F16173704
+#   (private key from Ryan's zip — same key pair registered for this account)
 #
 # IBKR_PRIVATE_KEY: paste the full contents of your privatekey.pem file.
 #   In .env, escape newlines as \n  OR  use a literal multiline value.

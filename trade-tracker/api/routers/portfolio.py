@@ -168,10 +168,10 @@ async def get_portfolio_summary(pool=Depends(get_pool)):
 
         positions = await _compute_positions(pool)
 
-        combined_equity = sum((a.equity_value or Decimal(0)) for a in accounts, Decimal(0))
-        combined_unrealized = sum((a.total_unrealized_pnl or Decimal(0)) for a in accounts, Decimal(0))
-        combined_realized = sum((a.total_realized_pnl or Decimal(0)) for a in accounts, Decimal(0))
-        combined_day_pnl = sum((a.day_pnl or Decimal(0)) for a in accounts, Decimal(0))
+        combined_equity = sum(((a.equity_value or Decimal(0)) for a in accounts), Decimal(0))
+        combined_unrealized = sum(((a.total_unrealized_pnl or Decimal(0)) for a in accounts), Decimal(0))
+        combined_realized = sum(((a.total_realized_pnl or Decimal(0)) for a in accounts), Decimal(0))
+        combined_day_pnl = sum(((a.day_pnl or Decimal(0)) for a in accounts), Decimal(0))
 
         # Latest combined NAV snapshot
         snap_row = await pool.fetchrow(

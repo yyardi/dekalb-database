@@ -166,6 +166,14 @@ class IBKRClient:
             else:
                 logger.error("IBKR: token response missing access_token: %s", resp.text[:200])
             return token
+        except requests.exceptions.HTTPError as exc:
+            body = ""
+            try:
+                body = exc.response.text[:500]
+            except Exception:
+                pass
+            logger.error("IBKR: failed to get bearer token: %s | body: %s", exc, body)
+            return None
         except Exception as exc:
             logger.error("IBKR: failed to get bearer token: %s", exc)
             return None

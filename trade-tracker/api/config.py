@@ -25,11 +25,12 @@ DB_MAX_CONNECTIONS = int(os.getenv("DB_MAX_CONNECTIONS", "10"))
 #   IBKR_CREDENTIAL     = dekalbcapitalpaper   (the IBKR paper username)
 #   IBKR_ACCOUNT_ID     = DFP321877
 #
-# Live account:
-#   IBKR_CLIENT_ID      = (from ticket #619394 — in Ryan's zip)
-#   IBKR_CLIENT_KEY_ID  = (from ticket #619394 — in Ryan's zip)
-#   IBKR_CREDENTIAL     = (IBKR live username)
-#   IBKR_ACCOUNT_ID     = U16303670 or U21601580
+# Live / Production account (F account):
+#   IBKR_CLIENT_ID      = DekalbCapital-Prod
+#   IBKR_CLIENT_KEY_ID  = main
+#   IBKR_CREDENTIAL     = dekalbcapital3
+#   IBKR_ACCOUNT_ID     = F16173704
+#   (private key from Ryan's zip — same key pair registered for this account)
 #
 # IBKR_PRIVATE_KEY: paste the full contents of your privatekey.pem file.
 #   In .env, escape newlines as \n  OR  use a literal multiline value.
@@ -47,9 +48,24 @@ IBKR_CREDENTIAL    = os.getenv("IBKR_CREDENTIAL", "")       # IBKR username
 IBKR_ACCOUNT_ID    = os.getenv("IBKR_ACCOUNT_ID", "")       # e.g. DFP321877
 IBKR_SERVER_IP     = os.getenv("IBKR_SERVER_IP", "")        # outbound IP of this server
 
-# RSA private key — full PEM content (literal newlines or \n-escaped both work)
-_raw_key = os.getenv("IBKR_PRIVATE_KEY", "")
-IBKR_PRIVATE_KEY = _raw_key.replace("\\n", "\n")            # normalise escaped newlines
+# RSA private key — accepts three formats:
+#   1. Base64-encoded PEM (ends with ==)  → just paste the whole thing as-is, no quotes
+#   2. Raw PEM with \n escapes            → -----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END...
+#   3. Raw PEM with actual newlines       → only works with quoted multiline in .env
+import base64 as _b64
+_raw_key = os.getenv("IBKR_PRIVATE_KEY", "").strip()
+if _raw_key and not _raw_key.startswith("-----"):
+    # Looks like base64-encoded — decode it to get the PEM string
+    try:
+        _decoded = _b64.b64decode(_raw_key).decode("utf-8").strip()
+        # If the decoded result is missing PEM headers, add them
+        if not _decoded.startswith("-----"):
+            _decoded = f"-----BEGIN RSA PRIVATE KEY-----\n{_decoded}\n-----END RSA PRIVATE KEY-----"
+        IBKR_PRIVATE_KEY = _decoded
+    except Exception:
+        IBKR_PRIVATE_KEY = _raw_key.replace("\\n", "\n")
+else:
+    IBKR_PRIVATE_KEY = _raw_key.replace("\\n", "\n")
 
 # IBKR API base URLs — don't change these unless IBKR updates them
 IBKR_TOKEN_URL       = "https://api.ibkr.com/oauth2/api/v1/token"

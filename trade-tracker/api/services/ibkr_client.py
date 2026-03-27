@@ -71,7 +71,7 @@ def _build_jwt() -> str:
         "sub": config.IBKR_CLIENT_ID,
         "aud": config.IBKR_TOKEN_URL,
         "iat": now,
-        "exp": now + 3600,
+        "exp": now + 300,
         "jti": str(uuid.uuid4()),
     }
     private_key = _load_private_key()
@@ -155,7 +155,6 @@ class IBKRClient:
                 data={
                     "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
                     "assertion": assertion,
-                    "scope": "sso-sessions.write",
                 },
                 timeout=15,
             )

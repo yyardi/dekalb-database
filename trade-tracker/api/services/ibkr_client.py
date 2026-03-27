@@ -126,9 +126,9 @@ class IBKRClient:
         if not bearer_token:
             return False
 
-        # Step 2: Create SSO session
-        if not self._create_sso_session(bearer_token):
-            return False
+        # Step 2: Set bearer token on session for all subsequent requests
+        self._session.headers.update({"Authorization": f"Bearer {bearer_token}"})
+        logger.info("IBKR: bearer token set on session")
 
         # Step 3: Init iserver trading/data session
         self._init_iserver()
@@ -178,28 +178,6 @@ class IBKRClient:
         except Exception as exc:
             logger.error("IBKR: failed to get bearer token: %s", exc)
             return None
-
-    def _create_sso_session(self, bearer_token: str) -> bool:
-        """Step 2: create SSO session using bearer token + credential + IP."""
-        try:
-            ip = config.IBKR_SERVER_IP or self._detect_ip()
-            resp = self._session.post(
-                config.IBKR_SSO_URL,
-                headers={"Authorization": f"Bearer {bearer_token}"},
-                json={
-                    "publish": 1,
-                    "compete": 1,
-                    "sub": config.IBKR_CREDENTIAL,
-                    "claims": {"ip": ip},
-                },
-                timeout=15,
-            )
-            resp.raise_for_status()
-            logger.info("IBKR: SSO session created (credential=%s, ip=%s)", config.IBKR_CREDENTIAL, ip)
-            return True
-        except Exception as exc:
-            logger.error("IBKR: SSO session creation failed: %s", exc)
-            return False
 
     def _init_iserver(self) -> None:
         """Step 3: activate trading/data session."""

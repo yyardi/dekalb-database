@@ -153,8 +153,9 @@ class IBKRClient:
             resp = self._session.post(
                 config.IBKR_TOKEN_URL,
                 data={
-                    "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-                    "assertion": assertion,
+                    "grant_type": "client_credentials",
+                    "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+                    "client_assertion": assertion,
                 },
                 timeout=15,
             )

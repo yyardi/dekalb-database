@@ -156,6 +156,7 @@ class IBKRClient:
                     "grant_type": "client_credentials",
                     "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
                     "client_assertion": assertion,
+                    "scope": "sso-sessions.write",
                 },
                 timeout=15,
             )

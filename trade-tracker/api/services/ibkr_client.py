@@ -71,7 +71,7 @@ def _build_jwt() -> str:
         "sub": config.IBKR_CLIENT_ID,
         "aud": config.IBKR_TOKEN_URL,
         "iat": now,
-        "exp": now + 3600,
+        "exp": now + 300,
         "jti": str(uuid.uuid4()),
     }
     private_key = _load_private_key()
@@ -126,17 +126,25 @@ class IBKRClient:
         if not bearer_token:
             return False
 
-        # Step 2: Create SSO session
-        if not self._create_sso_session(bearer_token):
+        # Step 2: Set bearer token on session for all subsequent requests
+        self._session.headers.update({"Authorization": f"Bearer {bearer_token}"})
+        logger.info("IBKR: bearer token set on session")
+
+        # Step 3: Create SSO session (establishes portal session for the account)
+        sso_token = self._create_sso_session()
+        if not sso_token:
             return False
 
-        # Step 3: Init iserver trading/data session
+        # Step 4: Swap to SSO session token for iserver calls
+        self._session.headers.update({"Authorization": f"Bearer {sso_token}"})
+
+        # Step 5: Init iserver trading/data session (opens brokerage session)
         self._init_iserver()
 
-        # Step 4: Wait for session to activate (IBKR requirement)
+        # Step 6: Wait for session to activate (IBKR requirement)
         time.sleep(4)
 
-        # Step 5: Warm-up call — required before portfolio/iserver endpoints work
+        # Step 7: Warm-up call — required before portfolio/iserver endpoints work
         self._warmup()
 
         self._connected = True
@@ -153,8 +161,9 @@ class IBKRClient:
             resp = self._session.post(
                 config.IBKR_TOKEN_URL,
                 data={
-                    "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-                    "assertion": assertion,
+                    "grant_type": "client_credentials",
+                    "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+                    "client_assertion": assertion,
                     "scope": "sso-sessions.write",
                 },
                 timeout=15,
@@ -166,31 +175,57 @@ class IBKRClient:
             else:
                 logger.error("IBKR: token response missing access_token: %s", resp.text[:200])
             return token
+        except requests.exceptions.HTTPError as exc:
+            body = ""
+            try:
+                body = exc.response.text[:500]
+            except Exception:
+                pass
+            logger.error("IBKR: failed to get bearer token: %s | body: %s", exc, body)
+            return None
         except Exception as exc:
             logger.error("IBKR: failed to get bearer token: %s", exc)
             return None
 
-    def _create_sso_session(self, bearer_token: str) -> bool:
-        """Step 2: create SSO session using bearer token + credential + IP."""
+    def _create_sso_session(self) -> Optional[str]:
+        """
+        Step 3: create SSO session.
+        Endpoint: POST /gw/api/v1/sso-sessions
+        Body: signed JWT (Content-Type: application/jwt) containing credential + ip.
+        Returns the SSO access_token on success, None on failure.
+        """
         try:
             ip = config.IBKR_SERVER_IP or self._detect_ip()
+            now = int(time.time())
+            payload = {
+                "iss": config.IBKR_CLIENT_ID,
+                "sub": config.IBKR_CLIENT_ID,
+                "iat": now,
+                "exp": now + 300,
+                "jti": str(uuid.uuid4()),
+                "credential": config.IBKR_CREDENTIAL,
+                "ip": ip,
+            }
+            private_key = _load_private_key()
+            sso_jwt = jwt.encode(
+                payload,
+                private_key,
+                algorithm="RS256",
+                headers={"kid": config.IBKR_CLIENT_KEY_ID},
+            )
             resp = self._session.post(
                 config.IBKR_SSO_URL,
-                headers={"Authorization": f"Bearer {bearer_token}"},
-                json={
-                    "publish": 1,
-                    "compete": 1,
-                    "sub": config.IBKR_CREDENTIAL,
-                    "claims": {"ip": ip},
-                },
+                data=sso_jwt,
+                headers={"Content-Type": "application/jwt"},
                 timeout=15,
             )
             resp.raise_for_status()
-            logger.info("IBKR: SSO session created (credential=%s, ip=%s)", config.IBKR_CREDENTIAL, ip)
-            return True
+            token = resp.json().get("access_token")
+            logger.info("IBKR: SSO session created (credential=%s)", config.IBKR_CREDENTIAL)
+            return token
         except Exception as exc:
             logger.error("IBKR: SSO session creation failed: %s", exc)
-            return False
+            return None
 
     def _init_iserver(self) -> None:
         """Step 3: activate trading/data session."""
@@ -321,12 +356,14 @@ class IBKRClient:
         return None
 
     def get_market_snapshot(self, conid: int) -> Optional[dict]:
-        params = {"conids": conid, "fields": "31,84,86"}
+        # Fields: 31=last, 84=bid, 86=ask, 82=change$, 83=change%, 7296=prev_close
+        params = {"conids": conid, "fields": "31,84,86,82,83,7296"}
         data = self._get("/iserver/marketdata/snapshot", params=params)
         if not data or not isinstance(data, list):
             return None
-        # IBKR sometimes needs two calls for snapshot data to populate
+        # First call subscribes to the feed — wait 1s then fetch actual data
         if not data[0].get("31"):
+            time.sleep(1)
             data = self._get("/iserver/marketdata/snapshot", params=params)
             if not data or not isinstance(data, list):
                 return None

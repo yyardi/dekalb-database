@@ -14,6 +14,7 @@ Endpoints:
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -214,7 +215,7 @@ async def _sync_ibkr_trades(pool) -> dict:
                 """,
                 "ibkr", config.IBKR_ACCOUNT_ID, trade_date, symbol, side,
                 float(qty), float(price), float(commission),
-                float(gross), float(net), order_id, str(t),
+                float(gross), float(net), order_id, json.dumps(t),
             )
             inserted += 1
 

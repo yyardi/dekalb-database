@@ -69,7 +69,7 @@ else:
 
 # IBKR API base URLs — don't change these unless IBKR updates them
 IBKR_TOKEN_URL       = "https://api.ibkr.com/oauth2/api/v1/token"
-IBKR_SSO_URL         = "https://api.ibkr.com/gw/api/v1/sso-sessions"
+IBKR_SSO_URL         = "https://api.ibkr.com/oauth2/api/v1/sso-sessions"
 IBKR_BASE_URL        = "https://api.ibkr.com/v1/api"
 
 # ---------------------------------------------------------------------------
